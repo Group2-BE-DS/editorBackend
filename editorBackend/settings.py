@@ -74,6 +74,8 @@ TEMPLATES = [
 ]
 
 WSGI_APPLICATION = 'editorBackend.wsgi.application'
+ASGI_APPLICATION = 'editorBackend.asgi.application'
+
 
 
 # Database
