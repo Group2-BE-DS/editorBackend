@@ -1,6 +1,7 @@
-from django.urls import path
-from . import consumers  # You'll create this next
+# collab/routing.py
+from django.urls import re_path
+from . import consumers
 
 websocket_urlpatterns = [
-    path('ws/somepath/', consumers.MyConsumer.as_asgi()),  # Define your WebSocket endpoint
+    re_path(r'ws/editor/$', consumers.MyConsumer.as_asgi()),
 ]

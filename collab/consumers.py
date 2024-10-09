@@ -1,18 +1,25 @@
-from channels.generic.websocket import AsyncWebsocketConsumer
+# collab/consumers.py
 import json
+from channels.generic.websocket import AsyncWebsocketConsumer
+import logging
+
+logger = logging.getLogger(__name__)
 
 class MyConsumer(AsyncWebsocketConsumer):
     async def connect(self):
-        await self.accept()  # Accept the WebSocket connection
+        logger.info("WebSocket connection attempt")
+        await self.accept()
+        logger.info("WebSocket connected successfully")
 
     async def disconnect(self, close_code):
-        pass  # Handle disconnection
+        logger.info(f"WebSocket disconnected with code: {close_code}")
 
     async def receive(self, text_data):
-        data = json.loads(text_data)  # Load the incoming data
-        message = data['message']  # Extract the message
+        logger.info(f"Received message: {text_data}")
+        data = json.loads(text_data)
+        message = data.get('message', '')
 
-        # Optionally send a response
         await self.send(text_data=json.dumps({
-            'message': message
+            'message': f"Server received: {message}"
         }))
+        logger.info("Response sent back to client")
