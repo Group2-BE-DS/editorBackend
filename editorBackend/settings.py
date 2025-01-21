@@ -44,7 +44,13 @@ INSTALLED_APPS = [
 
     #added dependenciies
     'channels',
+    'drf_spectacular',
 ]
+
+REST_FRAMEWORK = {
+    # YOUR SETTINGS
+    'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
+}
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
