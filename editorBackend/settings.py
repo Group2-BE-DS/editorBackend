@@ -40,9 +40,10 @@ INSTALLED_APPS = [
 
     #our apps
     'collab',
+    'filesys',
 
     #added dependenciies
-    'channels'
+    'channels',
 ]
 
 MIDDLEWARE = [
