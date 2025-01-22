@@ -51,3 +51,38 @@ def CreateRepository(request):
             serializer.save()
             return Response(serializer.data, status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['PUT'])
+def UpdateRepository(request, pk):
+    try:
+        repository = Repository.objects.get(pk=pk)
+    except Repository.DoesNotExist:
+        return Response({"detail": "Repository not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    # Only the repository's user can update it
+    if repository.user != request.user:
+        return Response({"detail": "You do not have permission to edit this repository."}, status=status.HTTP_403_FORBIDDEN)
+
+    # Update the repository details
+    serializer = RepositorySerializer(repository, data=request.data, partial=True)  # Use partial=True to update only the provided fields
+    if serializer.is_valid():
+        serializer.save()
+        return Response(serializer.data, status=status.HTTP_200_OK)
+    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['DELETE'])
+def DeleteRepository(request, pk):
+    try:
+        repository = Repository.objects.get(pk=pk)
+    except Repository.DoesNotExist:
+        return Response({"detail": "Repository not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    # Only the repository's user can delete it
+    if repository.user != request.user:
+        return Response({"detail": "You do not have permission to delete this repository."}, status=status.HTTP_403_FORBIDDEN)
+
+    # Delete the repository
+    repository.delete()
+    return Response({"detail": "Repository deleted successfully."}, status=status.HTTP_204_NO_CONTENT)

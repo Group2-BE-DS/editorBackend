@@ -1,7 +1,11 @@
 from django.urls import path
-from .views import CreateRepository
+from . import views
 
 urlpatterns = [
-    path('create-repository/', CreateRepository, name='create-repository'),
+    path('create-repository/', views.CreateRepository, name='create-repository'),
+    path('update-repository/<int:pk>/', views.UpdateRepository, name='update-repository'),
+        path('delete-repository/<int:pk>/', views.DeleteRepository, name='delete-repository'),
+
+
 
 ]
