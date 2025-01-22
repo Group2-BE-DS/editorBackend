@@ -1,0 +1,62 @@
+# Python
+*.pyc
+*.pyo
+*.pyd
+__pycache__/
+*.pyd
+*.db
+*.sqlite3
+*.log
+
+# Django
+*.log
+*.pot
+*.pyc
+*.pyo
+*.db
+*.sqlite3
+media/
+staticfiles/
+
+# .env files for local settings, sensitive information (e.g., API keys)
+.env
+*.env
+
+# Django migrations
+*/migrations/*.py
+*/migrations/__init__.py
+
+# PyCharm
+.idea/
+
+# VS Code
+.vscode/
+
+# Django build artifacts
+*.swp
+*.bak
+
+# Node.js dependencies (if you're using npm or yarn)
+node_modules/
+
+# Coverage reports
+.coverage
+*.coveragerc
+
+# Virtual environment folders
+venv/
+env/
+env.bak/
+venv.bak/
+
+# Test database files
+test_db/
+
+# Django secret key file
+secret_key.txt
+
+# Media files
+media/
+
+# .DS_Store for macOS
+.DS_Store
