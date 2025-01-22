@@ -1,58 +1,53 @@
 import os
-from pathlib import Path
-from rest_framework.views import APIView
+from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
+from .models import Repository
+from .serializers import RepositorySerializer
+from django.contrib.auth.models import User
 
-BASE_DIR = Path(__file__).resolve().parent.parent  # Project root
-FILE_ROOT = BASE_DIR / 'user_files'  # Directory for user files
+@api_view(['POST'])
+def CreateRepository(request):
+    if request.method == 'POST':
+        repo_name = request.data.get('name')
+        repo_description = request.data.get('description')
 
-class FileSystemView(APIView):
-    def get(self, request, path=''):
-        """
-        List files and directories or read file content.
-        """
-        target_path = FILE_ROOT / path
+        if not repo_name or not repo_description:
+            return Response(
+                {"detail": "Both 'name' and 'description' are required."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Hardcoding the user for testing purposes
+        try:
+            user = User.objects.get(username='mj')  # Replace 'mj' with your hardcoded username
+        except User.DoesNotExist:
+            return Response(
+                {"detail": "Hardcoded user 'mj' does not exist."},
+                status=status.HTTP_404_NOT_FOUND
+            )
 
-        if target_path.is_dir():
-            items = [
-                {
-                    'name': item.name,
-                    'is_dir': item.is_dir(),
-                }
-                for item in target_path.iterdir()
-            ]
-            return Response({'items': items})
-        elif target_path.is_file():
-            with open(target_path, 'r') as file:
-                content = file.read()
-            return Response({'content': content})
-        else:
-            return Response({'error': 'Path not found'}, status=status.HTTP_404_NOT_FOUND)
+        # Construct the folder path
+        folder_path = f"/c3/{user.username}/{repo_name}"
 
-    def post(self, request, path=''):
-        """
-        Create a file or directory.
-        """
-        target_path = FILE_ROOT / path
-        data = request.data
+        # Ensure the path exists or create it
+        try:
+            os.makedirs(folder_path, exist_ok=True)
+        except Exception as e:
+            return Response(
+                {"detail": f"Failed to create folder: {str(e)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
 
-        if data.get('is_dir', False):
-            target_path.mkdir(parents=True, exist_ok=True)
-            return Response({'message': 'Directory created'})
-        else:
-            with open(target_path, 'w') as file:
-                file.write(data.get('content', ''))
-            return Response({'message': 'File created'})
-
-    def put(self, request, path=''):
-        """
-        Update an existing file.
-        """
-        target_path = FILE_ROOT / path
-
-        if target_path.is_file():
-            with open(target_path, 'w') as file:
-                file.write(request.data.get('content', ''))
-            return Response({'message': 'File updated'})
-        return Response({'error': 'File not found'}, status=status.HTTP_404_NOT_FOUND)
+        # Save repository information with the location
+        data = {
+            "name": repo_name,
+            "description": repo_description,
+            "user": user.id,
+            "location": folder_path,  # Add the folder path to the data
+        }
+        serializer = RepositorySerializer(data=data)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
