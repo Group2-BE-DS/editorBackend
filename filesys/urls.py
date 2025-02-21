@@ -1,11 +1,11 @@
-from django.urls import path
-from . import views
+# urls.py
+from django.urls import path, include
+from rest_framework.routers import DefaultRouter
+from .views import RepositoryViewSet
+
+router = DefaultRouter()
+router.register(r'repositories', RepositoryViewSet)
 
 urlpatterns = [
-    path('create-repository/', views.CreateRepository, name='create-repository'),
-    path('update-repository/<int:pk>/', views.UpdateRepository, name='update-repository'),
-        path('delete-repository/<int:pk>/', views.DeleteRepository, name='delete-repository'),
-
-
-
+    path('', include(router.urls)),
 ]
