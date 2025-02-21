@@ -46,7 +46,20 @@ INSTALLED_APPS = [
     #added dependenciies
     'channels',
     'drf_spectacular',
+    'allauth',
+    'allauth.account',
+    'allauth.socialaccount',
+     'rest_framework',
+    'rest_framework.authtoken',  # Required for token authentication
+
+    'dj_rest_auth',
+    'dj_rest_auth.registration',  # Enables user registration APIs
 ]
+
+SITE_ID = 1  # Required by allauth
+ACCOUNT_EMAIL_REQUIRED = True
+ACCOUNT_USERNAME_REQUIRED = False  # Since Electron apps might not need usernames
+ACCOUNT_EMAIL_VERIFICATION = "optional"  # Change to "mandatory" if needed
 
 REST_FRAMEWORK = {
     # YOUR SETTINGS
@@ -74,6 +87,10 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
+
+    #added middleware
+    'allauth.account.middleware.AccountMiddleware',
+
 ]
 
 ROOT_URLCONF = 'editorBackend.urls'
