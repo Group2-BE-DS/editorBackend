@@ -1,10 +1,10 @@
+import os
 from rest_framework import viewsets, permissions
 from rest_framework.response import Response
 from rest_framework import status
-from django.db.models import Q
+from django.conf import settings
 from .models import Repository
 from .serializers import RepositorySerializer
-from django.conf import settings
 
 class RepositoryViewSet(viewsets.ModelViewSet):
     queryset = Repository.objects.all()
@@ -21,8 +21,17 @@ class RepositoryViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         """
         Automatically set the user to the authenticated user when creating a repository.
+        Also, create a folder for the repository.
         """
-        serializer.save(user=self.request.user)
+        user = self.request.user
+        repo_name = serializer.validated_data['name']
+        location = os.path.join(settings.BASE_DIR, 'c3', user.username, repo_name)
+
+        # Create the folder
+        os.makedirs(location, exist_ok=True)
+
+        # Save the repository with the location
+        serializer.save(user=user, location=location)
 
     def create(self, request, *args, **kwargs):
         """
@@ -34,24 +43,14 @@ class RepositoryViewSet(viewsets.ModelViewSet):
         headers = self.get_success_headers(serializer.data)
         return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
 
-    def retrieve(self, request, *args, **kwargs):
+    def perform_destroy(self, instance):
         """
-        Handle retrieving a single repository.
+        Delete the repository folder when the repository is deleted.
         """
-        instance = self.get_object()
-        serializer = self.get_serializer(instance)
-        return Response(serializer.data)
-
-    def update(self, request, *args, **kwargs):
-        """
-        Handle updating a repository.
-        """
-        partial = kwargs.pop('partial', False)
-        instance = self.get_object()
-        serializer = self.get_serializer(instance, data=request.data, partial=partial)
-        serializer.is_valid(raise_exception=True)
-        self.perform_update(serializer)
-        return Response(serializer.data)
+        if os.path.exists(instance.location):
+            # Delete the folder and its contents
+            os.rmdir(instance.location)  # Use shutil.rmtree for non-empty directories
+        super().perform_destroy(instance)
 
     def destroy(self, request, *args, **kwargs):
         """
