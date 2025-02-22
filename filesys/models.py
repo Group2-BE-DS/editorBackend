@@ -11,3 +11,13 @@ class Repository(models.Model):
 
     def __str__(self):
         return f"{self.name} ({self.user.username})"
+    
+class File(models.Model):
+    repository = models.ForeignKey(Repository, on_delete=models.CASCADE, related_name='files')
+    path = models.CharField(max_length=500)  # Relative path inside the repository
+    content = models.TextField(blank=True, null=True)  # File content
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"{self.path} ({self.repository.name})"
