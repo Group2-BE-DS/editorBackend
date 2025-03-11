@@ -1,115 +1,103 @@
 import os
-import aiofiles
-from rest_framework import viewsets, permissions, status
-from rest_framework.response import Response
+import shutil
+from rest_framework import viewsets, permissions, serializers
 from django.conf import settings
+from django.db import transaction
+from django.shortcuts import get_object_or_404
 from .models import Repository, File
 from .serializers import RepositorySerializer, FileSerializer
+
 
 class RepositoryViewSet(viewsets.ModelViewSet):
     queryset = Repository.objects.all()
     serializer_class = RepositorySerializer
-    permission_classes = [permissions.IsAuthenticated]  # Ensure only authenticated users can access
+    permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
-        """
-        Override the default queryset to return repositories for the authenticated user.
-        """
-        user = self.request.user
-        return Repository.objects.filter(user=user)
+        """Return repositories for the authenticated user."""
+        return Repository.objects.filter(user=self.request.user)
 
     def perform_create(self, serializer):
-        """
-        Automatically set the user to the authenticated user when creating a repository.
-        Also, create a folder for the repository.
-        """
+        """Create repository with proper directory structure."""
         user = self.request.user
         repo_name = serializer.validated_data['name']
-        location = os.path.join(settings.BASE_DIR, 'c3', user.username, repo_name)
+        
+        # Create path: BASE_DIR/c3/username/repository-name
+        base_path = os.path.join(settings.BASE_DIR, 'c3')
+        user_dir = os.path.join(base_path, user.username)
+        repo_dir = os.path.join(user_dir, repo_name)
 
-        # Create the folder
-        os.makedirs(location, exist_ok=True)
-
-        # Save the repository with the location
-        serializer.save(user=user, location=location)
-
-    def create(self, request, *args, **kwargs):
-        """
-        Handle repository creation.
-        """
-        serializer = self.get_serializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        self.perform_create(serializer)
-        headers = self.get_success_headers(serializer.data)
-        return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
+        try:
+            # Create all necessary directories
+            os.makedirs(user_dir, exist_ok=True)
+            os.makedirs(repo_dir, exist_ok=True)
+            
+            # Save repository with the correct path
+            serializer.save(user=user, location=repo_dir)
+        except OSError as e:
+            raise serializers.ValidationError(
+                {'error': f'Directory creation failed: {str(e)}'}
+            )
 
     def perform_destroy(self, instance):
-        """
-        Delete the repository folder when the repository is deleted.
-        """
-        if os.path.exists(instance.location):
-            # Delete the folder and its contents
-            os.rmdir(instance.location)  # Use shutil.rmtree for non-empty directories
-        super().perform_destroy(instance)
+        """Delete repository directory atomically."""
+        try:
+            if os.path.exists(instance.location):
+                shutil.rmtree(instance.location)
+            super().perform_destroy(instance)
+        except OSError as e:
+            raise serializers.ValidationError(
+                {'error': f'Directory deletion failed: {str(e)}'}
+                )
 
-    def destroy(self, request, *args, **kwargs):
-        """
-        Handle deleting a repository.
-        """
-        instance = self.get_object()
-        self.perform_destroy(instance)
-        return Response(status=status.HTTP_204_NO_CONTENT)
-    
+
 class FileViewSet(viewsets.ModelViewSet):
     queryset = File.objects.all()
     serializer_class = FileSerializer
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
-        """
-        Return files for the authenticated user's repository.
-        """
-        user = self.request.user
-        repository_id = self.kwargs.get('repository_id')
-        return File.objects.filter(repository__user=user, repository_id=repository_id)
+        """Get files for current repository."""
+        repository = get_object_or_404(
+            Repository,
+            id=self.kwargs['repository_id'],
+            user=self.request.user
+        )
+        return File.objects.filter(repository=repository)
 
-    async def perform_create(self, serializer):
-        """
-        Create a file and write its content to the filesystem.
-        """
-        repository = serializer.validated_data['repository']
+    def get_serializer_context(self):
+        """Add repository to serializer context."""
+        context = super().get_serializer_context()
+        context['repository'] = get_object_or_404(
+            Repository,
+            id=self.kwargs['repository_id'],
+            user=self.request.user
+        )
+        return context
+
+    @transaction.atomic
+    def perform_create(self, serializer):
+        """Create file with proper path validation."""
+        repository = self.get_serializer_context()['repository']
         file_path = os.path.join(repository.location, serializer.validated_data['path'])
+        
+        # Security check: Prevent directory traversal
+        if not file_path.startswith(repository.location):
+            raise serializers.ValidationError(
+                {'error': 'Invalid file path'}
+            )
 
-        # Create the file on the filesystem
-        async with aiofiles.open(file_path, 'w') as f:
-            await f.write(serializer.validated_data.get('content', ''))
-
-        # Save the file in the database
-        serializer.save()
-
-    async def perform_update(self, serializer):
-        """
-        Update the file content on the filesystem.
-        """
-        instance = serializer.instance
-        file_path = os.path.join(instance.repository.location, instance.path)
-
-        # Update the file on the filesystem
-        async with aiofiles.open(file_path, 'w') as f:
-            await f.write(serializer.validated_data.get('content', ''))
-
-        # Save the updated file in the database
-        serializer.save()
-
-    async def perform_destroy(self, instance):
-        """
-        Delete the file from the filesystem and the database.
-        """
-        file_path = os.path.join(instance.repository.location, instance.path)
-
-        # Delete the file from the filesystem
-        if os.path.exists(file_path):
-            os.remove(file_path)
-
-        # Delete the file from the database
-        await super().perform_destroy(instance)
+        try:
+            # Create parent directories if needed
+            os.makedirs(os.path.dirname(file_path), exist_ok=True)
+            
+            # Create or overwrite file
+            with open(file_path, 'w') as f:
+                f.write(serializer.validated_data.get('content', ''))
+            
+            # Save file record
+            serializer.save(repository=repository)
+        except OSError as e:
+            raise serializers.ValidationError(
+                {'error': f'File operation failed: {str(e)}'}
+                )

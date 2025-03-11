@@ -9,6 +9,9 @@ class Repository(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)  # Automatically updates on save
 
+    class Meta:
+        unique_together = ('user', 'name')  # Ensure unique repository names per user
+
     def __str__(self):
         return f"{self.name} ({self.user.username})"
     
@@ -18,6 +21,9 @@ class File(models.Model):
     content = models.TextField(blank=True, null=True)  # File content
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = ('repository', 'path')
 
     def __str__(self):
         return f"{self.path} ({self.repository.name})"
