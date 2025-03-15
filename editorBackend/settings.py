@@ -181,3 +181,19 @@ EMAIL_PORT = 587
 EMAIL_USE_TLS = True
 EMAIL_HOST_USER = 'dirabiola@gmail.com'
 EMAIL_HOST_PASSWORD = 'ockrqfajkmeldqlf'  # Use app-specific password for Gmail
+
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'handlers': {
+        'console': {
+            'class': 'logging.StreamHandler',
+        },
+    },
+    'loggers': {
+        'collab.consumers': {
+            'handlers': ['console'],
+            'level': 'INFO',
+        },
+    },
+}
