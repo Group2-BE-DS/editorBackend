@@ -173,3 +173,11 @@ MEDIA_URL = '/media/'
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 REPOSITORIES_ROOT = os.path.join(BASE_DIR, 'repositories')
+
+# Email Configuration
+EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
+EMAIL_HOST = 'smtp.gmail.com'  # Or your SMTP server
+EMAIL_PORT = 587
+EMAIL_USE_TLS = True
+EMAIL_HOST_USER = 'dirabiola@gmail.com'
+EMAIL_HOST_PASSWORD = 'ockrqfajkmeldqlf'  # Use app-specific password for Gmail

@@ -25,6 +25,7 @@ urlpatterns = [
     path('fs/', include(furls)),
     path('auth/registration/', include('dj_rest_auth.registration.urls')),
     path('auth/', include('dj_rest_auth.urls')),  
+    path('collab/', include('collab.urls')),
 
     #api docs setup
     path('api/schema/', SpectacularAPIView.as_view(), name='schema'),
