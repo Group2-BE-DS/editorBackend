@@ -6,12 +6,15 @@ from channels.generic.websocket import AsyncWebsocketConsumer
 from channels.db import database_sync_to_async
 from django.shortcuts import get_object_or_404
 from .token_store import TokenStore
+from .ot import TextOperation, compose_operations
 
 logger = logging.getLogger(__name__)
 
 class MyConsumer(AsyncWebsocketConsumer):
     file_clients = {}
     collaboration_rooms = {}  # Store room -> set of clients mapping
+    file_contents = {}  # In-memory content cache
+    file_operations = {}  # Store operations per file
 
     @database_sync_to_async
     def get_file_and_content(self, file_id):
@@ -29,6 +32,9 @@ class MyConsumer(AsyncWebsocketConsumer):
             with open(file_path, 'r', encoding='utf-8') as f:
                 content = f.read()
             logger.info(f"Successfully read file content, length: {len(content)}")
+            # Cache the content
+            self.file_contents[file_id] = content
+            self.file_operations[file_id] = []
             return file_instance, content
         except Exception as e:
             logger.error(f"Error reading file: {str(e)}")
@@ -46,6 +52,12 @@ class MyConsumer(AsyncWebsocketConsumer):
         from filesys.models import File
         file_instance = get_object_or_404(File, id=file_id)
         return file_instance
+
+    @database_sync_to_async
+    def write_file_content(self, file_path, content):
+        """Synchronously write content to file"""
+        with open(file_path, 'w', encoding='utf-8') as f:
+            f.write(content)
 
     async def connect(self):
         logger.info("WebSocket connection attempt")
@@ -119,6 +131,16 @@ class MyConsumer(AsyncWebsocketConsumer):
                     raise ValueError("Missing content field")
                 logger.info(f"Processing codeUpdate request for file_id: {file_id}")
                 await self.handle_code_update(file_id, content)
+            elif message_type == 'operation':
+                # Handle OT operation
+                await self.handle_operation(
+                    data.get('fileId'),
+                    data.get('operation'),
+                    data.get('revision')
+                )
+            elif message_type == 'saveFile':
+                # Handle explicit save request
+                await self.handle_save_file(data.get('fileId'))
             else:
                 raise ValueError(f"Unknown message type: {message_type}")
 
@@ -160,22 +182,33 @@ class MyConsumer(AsyncWebsocketConsumer):
             await self.send_error(f"Failed to open file: {str(e)}")
             raise  # Re-raise to see full traceback in logs
 
+    @database_sync_to_async
+    def update_file_content(self, file_id, content):
+        """Handle all synchronous file operations in one place"""
+        from filesys.models import File
+        file_instance = get_object_or_404(File, id=file_id)
+        file_path = os.path.join(file_instance.repository.location, file_instance.path)
+        
+        # Write content to file
+        with open(file_path, 'w', encoding='utf-8') as f:
+            f.write(content)
+        
+        return file_instance
+
     async def handle_code_update(self, file_id, content):
         try:
-            file_instance = await self.get_file_instance(file_id)
-            file_path = os.path.join(file_instance.repository.location, file_instance.path)
+            # Use a single sync-to-async wrapper for all file operations
+            await self.update_file_content(file_id, content)
 
-            with open(file_path, 'w', encoding='utf-8') as f:
-                f.write(content)
+            # Cache the content in memory
+            self.file_contents[file_id] = content
 
             # Find all clients that should receive this update
             recipients = set()
-            
-            # Add clients viewing this file
             if file_id in self.file_clients:
                 recipients.update(self.file_clients[file_id])
             
-            # Add clients in the same collaboration room
+            # Add collaboration room clients
             for token, clients in self.collaboration_rooms.items():
                 if self in clients:
                     recipients.update(clients)
@@ -192,6 +225,90 @@ class MyConsumer(AsyncWebsocketConsumer):
         except Exception as e:
             logger.error(f"Error updating file: {str(e)}")
             await self.send_error(f"Failed to update file: {str(e)}")
+            raise  # Re-raise to see full traceback
+
+    async def handle_operation(self, file_id, operation_data, revision):
+        try:
+            if file_id not in self.file_contents:
+                raise ValueError("File not loaded")
+
+            operation = TextOperation.from_json(operation_data)
+            
+            # If there are pending operations, compose them
+            if self.file_operations[file_id]:
+                last_op = self.file_operations[file_id][-1]
+                operation = compose_operations(last_op, operation)
+
+            # Apply the operation
+            self.file_contents[file_id] = operation.apply(self.file_contents[file_id])
+            self.file_operations[file_id].append(operation)
+
+            # Broadcast to other clients
+            recipients = set()
+            if file_id in self.file_clients:
+                recipients.update(self.file_clients[file_id])
+            
+            for token, clients in self.collaboration_rooms.items():
+                if self in clients:
+                    recipients.update(clients)
+
+            for client in recipients:
+                if client != self:
+                    await client.send(text_data=json.dumps({
+                        'type': 'operation',
+                        'fileId': file_id,
+                        'operation': operation.to_json(),
+                        'revision': revision
+                    }))
+
+        except Exception as e:
+            logger.error(f"Error handling operation: {str(e)}")
+            await self.send_error(str(e))
+
+    @database_sync_to_async
+    def persist_file_content(self, file_id):
+        """Handle file saving in sync context"""
+        from filesys.models import File
+        file_instance = get_object_or_404(File, id=file_id)
+        file_path = os.path.join(file_instance.repository.location, file_instance.path)
+        
+        with open(file_path, 'w', encoding='utf-8') as f:
+            f.write(self.file_contents[file_id])
+        
+        return file_instance
+
+    async def handle_save_file(self, file_id):
+        try:
+            if file_id not in self.file_contents:
+                raise ValueError("File not loaded")
+
+            # Persist content
+            await self.persist_file_content(file_id)
+
+            # Clear the operations history after saving
+            self.file_operations[file_id] = []
+
+            # Notify all clients about successful save
+            await self.broadcast_to_file_clients(file_id, {
+                'type': 'saved',
+                'fileId': file_id
+            })
+
+        except Exception as e:
+            logger.error(f"Error saving file: {str(e)}")
+            await self.send_error(str(e))
+
+    async def broadcast_to_file_clients(self, file_id, message):
+        recipients = set()
+        if file_id in self.file_clients:
+            recipients.update(self.file_clients[file_id])
+        
+        for token, clients in self.collaboration_rooms.items():
+            if self in clients:
+                recipients.update(clients)
+
+        for client in recipients:
+            await client.send(text_data=json.dumps(message))
 
     async def send_error(self, message):
         await self.send(text_data=json.dumps({
