@@ -197,35 +197,51 @@ class MyConsumer(AsyncWebsocketConsumer):
 
     async def handle_code_update(self, file_id, content):
         try:
-            # Use a single sync-to-async wrapper for all file operations
-            await self.update_file_content(file_id, content)
-
-            # Cache the content in memory
+            logger.info(f"Handling code update for file {file_id}")
+            
+            # Cache the content first
             self.file_contents[file_id] = content
 
             # Find all clients that should receive this update
             recipients = set()
+            
+            # Add all clients viewing this file
             if file_id in self.file_clients:
+                logger.info(f"Found {len(self.file_clients[file_id])} clients viewing file {file_id}")
                 recipients.update(self.file_clients[file_id])
             
             # Add collaboration room clients
             for token, clients in self.collaboration_rooms.items():
                 if self in clients:
+                    logger.info(f"Adding {len(clients)} clients from collaboration room")
                     recipients.update(clients)
             
-            # Send updates to all unique recipients except sender
+            # Remove self from recipients to avoid echo
+            recipients.discard(self)
+            
+            logger.info(f"Broadcasting update to {len(recipients)} recipients")
+            
+            # Send updates to all recipients
+            update_message = {
+                'type': 'update',
+                'fileId': file_id,
+                'content': content,
+            }
+            
             for client in recipients:
-                if client != self:
-                    await client.send(text_data=json.dumps({
-                        'type': 'update',
-                        'fileId': file_id,
-                        'content': content,
-                    }))
+                try:
+                    await client.send(text_data=json.dumps(update_message))
+                    logger.info(f"Update sent successfully to a client")
+                except Exception as e:
+                    logger.error(f"Failed to send update to client: {str(e)}")
+
+            # Only persist to file system if explicitly requested via save
+            # await self.update_file_content(file_id, content)
 
         except Exception as e:
             logger.error(f"Error updating file: {str(e)}")
             await self.send_error(f"Failed to update file: {str(e)}")
-            raise  # Re-raise to see full traceback
+            raise
 
     async def handle_operation(self, file_id, operation_data, revision):
         try:
