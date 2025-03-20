@@ -197,3 +197,16 @@ LOGGING = {
         },
     },
 }
+
+CACHES = {
+    'default': {
+        'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+        'TIMEOUT': 3600,  # 1 hour in seconds
+        'OPTIONS': {
+            'MAX_ENTRIES': 1000
+        }
+    }
+}
+
+# Add this setting to control token expiry
+COLLAB_TOKEN_EXPIRY = 3600  # 1 hour in seconds
