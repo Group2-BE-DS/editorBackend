@@ -63,10 +63,6 @@ class MyConsumer(AsyncWebsocketConsumer):
         logger.info("WebSocket connection attempt")
         
         try:
-            # Accept all initial connections
-            await self.accept()
-            logger.info("Base WebSocket connection established")
-            
             # Check if this is a collaboration request
             query_string = self.scope['query_string'].decode('utf-8')
             query_params = dict(urllib.parse.parse_qsl(query_string))
@@ -76,23 +72,30 @@ class MyConsumer(AsyncWebsocketConsumer):
                 # This is a collaboration connection attempt
                 if TokenStore.verify_token(token):
                     logger.info(f"Collaboration token verified: {token}")
+                    await self.accept()
+                    
+                    # Set up collaboration room
                     if token not in self.collaboration_rooms:
                         self.collaboration_rooms[token] = set()
                     self.collaboration_rooms[token].add(self)
+                    
+                    # Notify client of successful connection
                     await self.send(text_data=json.dumps({
                         'type': 'collaboration_started',
                         'message': 'Joined collaboration session'
                     }))
                 else:
                     logger.warning(f"Invalid collaboration token: {token}")
-                    await self.send(text_data=json.dumps({
-                        'type': 'error',
-                        'message': 'Invalid collaboration token'
-                    }))
-            
+                    # Close connection with custom code
+                    await self.close(code=4001)
+            else:
+                # Regular connection without collaboration
+                await self.accept()
+                logger.info("Base WebSocket connection established")
+                
         except Exception as e:
             logger.error(f"Connection error: {str(e)}")
-            await self.close()
+            await self.close(code=4002)
 
     async def disconnect(self, close_code):
         logger.info(f"WebSocket disconnected with code: {close_code}")
