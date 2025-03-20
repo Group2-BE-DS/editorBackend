@@ -14,9 +14,10 @@ from .serializers import RepositorySerializer, FileSerializer
 logger = logging.getLogger(__name__)
 
 class RepositoryViewSet(viewsets.ModelViewSet):
-    queryset = Repository.objects.all()
     serializer_class = RepositorySerializer
     permission_classes = [permissions.IsAuthenticated]
+    lookup_field = 'slug'
+    lookup_value_regex = '[\w-]+/[\w-]+'  # Allows slashes in the slug
 
     def get_queryset(self):
         return Repository.objects.filter(user=self.request.user)
@@ -146,6 +147,18 @@ Thumbs.db
         }
         return Response(response_data)
 
+    def get_object(self):
+        """
+        Override to allow looking up by slug
+        """
+        queryset = self.get_queryset()
+        lookup_url_kwarg = self.lookup_url_kwarg or self.lookup_field
+        if 'slug' in self.kwargs:
+            filter_kwargs = {'slug': self.kwargs['slug']}
+        else:
+            filter_kwargs = {self.lookup_field: self.kwargs[lookup_url_kwarg]}
+        return get_object_or_404(queryset, **filter_kwargs)
+
 class FileViewSet(viewsets.ModelViewSet):
     queryset = File.objects.all()
     serializer_class = FileSerializer
@@ -154,7 +167,7 @@ class FileViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         repository = get_object_or_404(
             Repository,
-            id=self.kwargs['repository_id'],
+            slug=self.kwargs['repository_slug'],
             user=self.request.user
         )
         return File.objects.filter(repository=repository)
@@ -163,7 +176,7 @@ class FileViewSet(viewsets.ModelViewSet):
         context = super().get_serializer_context()
         context['repository'] = get_object_or_404(
             Repository,
-            id=self.kwargs['repository_id'],
+            slug=self.kwargs['repository_slug'],
             user=self.request.user
         )
         return context

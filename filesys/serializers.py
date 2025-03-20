@@ -4,10 +4,12 @@ from django.conf import settings
 import os
 
 class RepositorySerializer(serializers.ModelSerializer):
+    slug = serializers.CharField(read_only=True)
+    
     class Meta:
         model = Repository
-        fields = ['id', 'user', 'name', 'description', 'location', 'created_at', 'updated_at']
-        read_only_fields = ['id', 'user', 'created_at', 'updated_at']
+        fields = ['id', 'user', 'name', 'slug', 'description', 'location', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'user', 'slug', 'created_at', 'updated_at']
 
     def validate_name(self, value):
         user = self.context['request'].user
