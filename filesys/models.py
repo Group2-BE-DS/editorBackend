@@ -14,6 +14,11 @@ class Repository(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
     git_initialized = models.BooleanField(default=False)
     last_commit_hash = models.CharField(max_length=40, blank=True)
+    collaborators = models.ManyToManyField(
+        settings.AUTH_USER_MODEL,
+        related_name='collaborative_repositories',
+        blank=True
+    )
 
     class Meta:
         unique_together = ('user', 'name')
@@ -35,6 +40,10 @@ class Repository(models.Model):
             return result.stdout
         except subprocess.CalledProcessError:
             return "Git status unavailable"
+
+    def user_has_access(self, user):
+        """Check if user has access (owner or collaborator)"""
+        return user == self.user or self.collaborators.filter(id=user.id).exists()
 
 class File(models.Model):
     repository = models.ForeignKey(Repository, on_delete=models.CASCADE, related_name='files')
