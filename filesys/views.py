@@ -171,16 +171,24 @@ Thumbs.db
     @action(detail=False, methods=['get'], url_path='all')
     def list_all_repositories(self, request):
         """
-        List all repositories with their full slugs (username/repo-name)
+        List all repositories with their full slugs and collaborators
         """
-        repositories = Repository.objects.all().select_related('user')
+        repositories = Repository.objects.all().select_related('user').prefetch_related('collaborators')
         data = [{
             'slug': repo.slug,
             'name': repo.name,
             'description': repo.description,
             'owner': repo.user.username,
             'created_at': repo.created_at,
-            'updated_at': repo.updated_at
+            'updated_at': repo.updated_at,
+            'collaborators': [
+                {
+                    'username': user.username,
+                    'id': user.id
+                } for user in repo.collaborators.all()
+            ],
+            'is_owner': repo.user == request.user,
+            'is_collaborator': request.user in repo.collaborators.all()
         } for repo in repositories]
         
         return Response({
@@ -234,14 +242,64 @@ class FileViewSet(viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated, IsOwnerOrCollaborator]
 
     def get_queryset(self):
-        repository = get_object_or_404(
-            Repository.objects.filter(
-                Q(user=self.request.user) | 
-                Q(collaborators=self.request.user)
-            ),
-            slug=self.kwargs['repository_slug']
-        )
-        return File.objects.filter(repository=repository)
+        try:
+            repository = get_object_or_404(
+                Repository,
+                slug=self.kwargs['repository_slug']
+            )
+            if not repository.user_has_access(self.request.user):
+                return File.objects.none()
+            return File.objects.filter(repository=repository)
+        except Exception as e:
+            logger.error(f"Error in get_queryset: {str(e)}")
+            return File.objects.none()
+
+    def retrieve(self, request, *args, **kwargs):
+        try:
+            instance = self.get_object()
+            
+            # Check access permission
+            if not instance.user_has_access(request.user):
+                return Response(
+                    {'error': 'Access denied'},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+            
+            serializer = self.get_serializer(instance)
+            
+            # Read actual file content
+            file_path = os.path.join(instance.repository.location, instance.path)
+            if os.path.exists(file_path):
+                try:
+                    with open(file_path, 'r', encoding='utf-8') as f:
+                        content = f.read()
+                    data = serializer.data
+                    data['content'] = content
+                    return Response(data)
+                except UnicodeDecodeError:
+                    logger.warning(f"Binary file detected: {file_path}")
+                    return Response(
+                        {'error': 'Cannot read binary file'},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+                except Exception as e:
+                    logger.error(f"Error reading file {file_path}: {str(e)}")
+                    return Response(
+                        {'error': f'Error reading file: {str(e)}'},
+                        status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                    )
+            else:
+                return Response(
+                    {'error': 'File not found on disk'},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+                
+        except Exception as e:
+            logger.error(f"Error retrieving file: {str(e)}")
+            return Response(
+                {'error': f'Error retrieving file: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
 
     def get_serializer_context(self):
         context = super().get_serializer_context()

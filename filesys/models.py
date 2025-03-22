@@ -82,3 +82,7 @@ class File(models.Model):
             'txt': 'plaintext',
         }
         return language_map.get(extension, 'plaintext')  # Default to plaintext if unknown
+
+    def user_has_access(self, user):
+        """Check if user has access through repository permissions"""
+        return self.repository.user_has_access(user)
