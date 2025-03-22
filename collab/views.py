@@ -33,8 +33,8 @@ class VerificationCodeAPI(APIView):
             code_bytes = code.encode('ascii')
             base64_code = base64.b64encode(code_bytes).decode('ascii')
 
-            # Store token
-            TokenStore.add_token(base64_code)
+            # Store token with repository info
+            TokenStore.add_token(base64_code, repository.slug)
 
             # Send email
             send_mail(
