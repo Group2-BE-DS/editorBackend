@@ -42,6 +42,7 @@ INSTALLED_APPS = [
     #our apps
     'collab',
     'filesys',
+    'autocommit',
 
     #added dependenciies
     'channels',
