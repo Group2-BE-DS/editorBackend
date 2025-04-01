@@ -10,6 +10,7 @@ from django.db import transaction
 from django.shortcuts import get_object_or_404
 from .models import Repository, File
 from .serializers import RepositorySerializer, FileSerializer
+from autocommit.tasks import auto_commit_changes
 
 logger = logging.getLogger(__name__)
 
@@ -218,6 +219,10 @@ class FileViewSet(viewsets.ModelViewSet):
         try:
             with open(file_path, 'w', encoding='utf-8') as f:
                 f.write(serializer.validated_data.get('content', instance.content))
+            
+            # Trigger auto-commit after file is saved
+            auto_commit_changes(repository.id)
+            
         except OSError as e:
             raise serializers.ValidationError(
                 {'error': f'File operation failed: {str(e)}'}

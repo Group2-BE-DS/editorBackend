@@ -32,6 +32,7 @@ ALLOWED_HOSTS = ['*']
 # Application definition
 
 INSTALLED_APPS = [
+    'daphne',  # Add this first
     'django.contrib.admin',
     'django.contrib.auth',
     'django.contrib.contenttypes',
@@ -211,3 +212,10 @@ CACHES = {
 
 # Add this setting to control token expiry
 COLLAB_TOKEN_EXPIRY = 3600  # 1 hour in seconds
+
+# Channel Layers configuration
+CHANNEL_LAYERS = {
+    "default": {
+        "BACKEND": "channels.layers.InMemoryChannelLayer"
+    }
+}
