@@ -8,7 +8,7 @@ logger = logging.getLogger(__name__)
 
 def auto_commit_changes(repository_id):
     """
-    Automatically commit changes for a specific repository
+    Automatically commit changes for a specific repository on the history branch
     Args:
         repository_id: ID of the repository being accessed
     """
@@ -25,6 +25,15 @@ def auto_commit_changes(repository_id):
 
         if changed_files:
             try:
+                # Ensure we're on the history branch
+                if 'history' not in repo.heads:
+                    # Create history branch if it doesn't exist
+                    history_branch = repo.create_head('history')
+                    history_branch.checkout()
+                else:
+                    # Switch to history branch
+                    repo.heads.history.checkout()
+
                 # Stage all changes
                 repo.git.add(A=True)
                 
@@ -38,7 +47,7 @@ def auto_commit_changes(repository_id):
                 repository.last_commit_hash = commit.hexsha
                 repository.save()
                 
-                logger.info(f"✅ Created commit in {repo_path}: {commit_message}")
+                logger.info(f"✅ Created commit in {repo_path} on history branch: {commit_message}")
                 return True
                 
             except Exception as e:
@@ -88,3 +97,58 @@ def generate_commit_message(changed_files):
             message += f"\n- {f}"
             
     return message
+
+def commit_to_main(repository_id):
+    """
+    Commit changes to the main branch for a specific repository
+    Args:
+        repository_id: ID of the repository being accessed
+    Returns:
+        bool: True if commit was successful, False otherwise
+    """
+    try:
+        repository = Repository.objects.get(id=repository_id)
+        repo_path = repository.location
+        
+        if not os.path.exists(repo_path):
+            logger.warning(f"Repository path does not exist: {repo_path}")
+            return False
+            
+        repo = git.Repo(repo_path)
+        changed_files = get_changed_files(repo)
+
+        if changed_files:
+            try:
+                # Switch to main/master branch
+                main_branch = 'main' if 'main' in repo.heads else 'master'
+                repo.heads[main_branch].checkout()
+
+                # Stage all changes
+                repo.git.add(A=True)
+                
+                # Generate commit message
+                commit_message = generate_commit_message(changed_files)
+                
+                # Create commit
+                commit = repo.index.commit(commit_message)
+                
+                # Update repository last commit hash
+                repository.last_commit_hash = commit.hexsha
+                repository.save()
+                
+                logger.info(f"✅ Created commit in {repo_path} on {main_branch} branch: {commit_message}")
+                return True
+                
+            except Exception as e:
+                logger.error(f"Failed to create commit on main: {str(e)}")
+                return False
+        else:
+            logger.info(f"No changes detected in {repo_path}")
+            return False
+            
+    except Repository.DoesNotExist:
+        logger.error(f"Repository with ID {repository_id} not found")
+        return False
+    except Exception as e:
+        logger.error(f"Error during main branch commit: {str(e)}")
+        return False

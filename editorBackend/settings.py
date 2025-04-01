@@ -94,7 +94,7 @@ MIDDLEWARE = [
 
     #added middleware
     'allauth.account.middleware.AccountMiddleware',
-
+    'debug_toolbar.middleware.DebugToolbarMiddleware',  # Add this if not present
 ]
 
 ROOT_URLCONF = 'editorBackend.urls'
@@ -196,6 +196,11 @@ LOGGING = {
         'collab.consumers': {
             'handlers': ['console'],
             'level': 'INFO',
+        },
+        'django.request': {
+            'handlers': ['console'],
+            'level': 'DEBUG',
+            'propagate': True,
         },
     },
 }
