@@ -7,6 +7,7 @@ from channels.db import database_sync_to_async
 from django.shortcuts import get_object_or_404
 from .token_store import TokenStore
 from .ot import TextOperation, compose_operations
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -15,6 +16,7 @@ class MyConsumer(AsyncWebsocketConsumer):
     collaboration_rooms = {}  # Store room -> set of clients mapping
     file_contents = {}  # In-memory content cache
     file_operations = {}  # Store operations per file
+    room_users = {}  # Store user info per room
 
     @database_sync_to_async
     def get_file_and_content(self, file_id):
@@ -63,13 +65,15 @@ class MyConsumer(AsyncWebsocketConsumer):
         logger.info("WebSocket connection attempt")
         
         try:
-            # Check if this is a collaboration request
             query_string = self.scope['query_string'].decode('utf-8')
             query_params = dict(urllib.parse.parse_qsl(query_string))
             token = query_params.get('token')
             
+            # Get user from scope
+            user = self.scope.get('user')
+            username = user.username if user and user.is_authenticated else 'Anonymous'
+            
             if token:
-                # This is a collaboration connection attempt
                 if TokenStore.verify_token(token):
                     logger.info(f"Collaboration token verified: {token}")
                     await self.accept()
@@ -77,19 +81,39 @@ class MyConsumer(AsyncWebsocketConsumer):
                     # Set up collaboration room
                     if token not in self.collaboration_rooms:
                         self.collaboration_rooms[token] = set()
-                    self.collaboration_rooms[token].add(self)
+                        self.room_users[token] = {}
                     
-                    # Notify client of successful connection
-                    await self.send(text_data=json.dumps({
-                        'type': 'collaboration_started',
-                        'message': 'Joined collaboration session'
-                    }))
+                    join_time = datetime.now().isoformat()
+                    user_id = str(hash(self))
+                    
+                    self.collaboration_rooms[token].add(self)
+                    self.room_users[token][self] = {
+                        'username': username,
+                        'joined_at': join_time,
+                        'id': user_id
+                    }
+                    
+                    # Get list of all users in room
+                    users_in_room = list(self.room_users[token].values())
+                    
+                    # Notify all clients in room about the new user
+                    room_message = {
+                        'type': 'collaboration_update',
+                        'event': 'user_joined',
+                        'user': {
+                            'username': username,
+                            'joined_at': join_time,
+                            'id': user_id
+                        },
+                        'users': users_in_room,
+                        'total_users': len(users_in_room)
+                    }
+                    
+                    await self.broadcast_room_message(token, room_message)
                 else:
                     logger.warning(f"Invalid collaboration token: {token}")
-                    # Close connection with custom code
                     await self.close(code=4001)
             else:
-                # Regular connection without collaboration
                 await self.accept()
                 logger.info("Base WebSocket connection established")
                 
@@ -99,20 +123,37 @@ class MyConsumer(AsyncWebsocketConsumer):
 
     async def disconnect(self, close_code):
         logger.info(f"WebSocket disconnected with code: {close_code}")
+        username = self.scope.get('user').username if self.scope.get('user') else 'Anonymous'
+        
+        # Remove from collaboration rooms and notify others
+        for token, clients in list(self.collaboration_rooms.items()):
+            if self in clients:
+                clients.remove(self)
+                user_info = self.room_users[token].pop(self, None)
+                
+                if user_info:
+                    # Notify remaining clients about user leaving
+                    leave_message = {
+                        'type': 'collaboration_update',
+                        'event': 'user_left',
+                        'user': user_info,
+                        'users': list(self.room_users[token].values()),
+                        'total_users': len(self.room_users[token])
+                    }
+                    
+                    await self.broadcast_room_message(token, leave_message)
+                
+                if not clients:
+                    del self.collaboration_rooms[token]
+                    del self.room_users[token]
+                    TokenStore.remove_token(token)
+
         # Remove from file clients
         for file_id, clients in self.file_clients.items():
             if self in clients:
                 clients.remove(self)
                 if not clients:
                     del self.file_clients[file_id]
-        
-        # Remove from collaboration rooms
-        for token, clients in self.collaboration_rooms.items():
-            if self in clients:
-                clients.remove(self)
-                if not clients:
-                    del self.collaboration_rooms[token]
-                    TokenStore.remove_token(token)
 
     async def receive(self, text_data):
         try:
@@ -328,6 +369,15 @@ class MyConsumer(AsyncWebsocketConsumer):
 
         for client in recipients:
             await client.send(text_data=json.dumps(message))
+
+    async def broadcast_room_message(self, token, message):
+        """Helper method to broadcast messages to all clients in a room"""
+        if token in self.collaboration_rooms:
+            for client in self.collaboration_rooms[token]:
+                try:
+                    await client.send(text_data=json.dumps(message))
+                except Exception as e:
+                    logger.error(f"Failed to send message to client: {str(e)}")
 
     async def send_error(self, message):
         await self.send(text_data=json.dumps({

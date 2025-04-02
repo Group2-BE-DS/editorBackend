@@ -2,26 +2,36 @@ import os
 import shutil
 import subprocess
 import logging
-from rest_framework import viewsets, permissions, serializers
+from django.db.models import Q
+from django.contrib.auth import get_user_model
+from rest_framework import viewsets, permissions, serializers, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
+from rest_framework.exceptions import PermissionDenied
 from django.conf import settings
 from django.db import transaction
 from django.shortcuts import get_object_or_404
 from .models import Repository, File
 from .serializers import RepositorySerializer, FileSerializer
+from .permissions import IsOwnerOrCollaborator
+
 from autocommit.tasks import auto_commit_changes
 
+User = get_user_model()
 logger = logging.getLogger(__name__)
 
 class RepositoryViewSet(viewsets.ModelViewSet):
     serializer_class = RepositorySerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, IsOwnerOrCollaborator]
     lookup_field = 'slug'
     lookup_value_regex = '[\w-]+/[\w-]+'  # Allows slashes in the slug
 
     def get_queryset(self):
-        return Repository.objects.filter(user=self.request.user)
+        # Show repositories where user is owner or collaborator
+        return Repository.objects.filter(
+            Q(user=self.request.user) | 
+            Q(collaborators=self.request.user)
+        ).distinct()
 
     def perform_create(self, serializer):
         user = self.request.user
@@ -160,26 +170,149 @@ Thumbs.db
             filter_kwargs = {self.lookup_field: self.kwargs[lookup_url_kwarg]}
         return get_object_or_404(queryset, **filter_kwargs)
 
+    @action(detail=False, methods=['get'], url_path='all')
+    def list_all_repositories(self, request):
+        """
+        List all repositories with their full slugs and collaborators
+        """
+        repositories = Repository.objects.all().select_related('user').prefetch_related('collaborators')
+        data = [{
+            'slug': repo.slug,
+            'name': repo.name,
+            'description': repo.description,
+            'owner': repo.user.username,
+            'created_at': repo.created_at,
+            'updated_at': repo.updated_at,
+            'collaborators': [
+                {
+                    'username': user.username,
+                    'id': user.id
+                } for user in repo.collaborators.all()
+            ],
+            'is_owner': repo.user == request.user,
+            'is_collaborator': request.user in repo.collaborators.all()
+        } for repo in repositories]
+        
+        return Response({
+            'count': len(data),
+            'repositories': data
+        })
+
+    # Add new actions for managing collaborators
+    @action(detail=True, methods=['post'], url_path='add-collaborator')
+    def add_collaborator(self, request, slug=None):
+        repository = self.get_object()
+        if repository.user != request.user:
+            return Response(
+                {'error': 'Only repository owner can add collaborators'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        user_id = request.data.get('user_id')
+        try:
+            user = User.objects.get(id=user_id)
+            repository.collaborators.add(user)
+            return Response({'message': f'Added {user.username} as collaborator'})
+        except User.DoesNotExist:
+            return Response(
+                {'error': 'User not found'}, 
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+    @action(detail=True, methods=['post'], url_path='remove-collaborator')
+    def remove_collaborator(self, request, slug=None):
+        repository = self.get_object()
+        if repository.user != request.user:
+            return Response(
+                {'error': 'Only repository owner can remove collaborators'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        user_id = request.data.get('user_id')
+        try:
+            user = User.objects.get(id=user_id)
+            repository.collaborators.remove(user)
+            return Response({'message': f'Removed {user.username} as collaborator'})
+        except User.DoesNotExist:
+            return Response(
+                {'error': 'User not found'}, 
+                status=status.HTTP_404_NOT_FOUND
+            )
+
 class FileViewSet(viewsets.ModelViewSet):
-    queryset = File.objects.all()
     serializer_class = FileSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, IsOwnerOrCollaborator]
 
     def get_queryset(self):
-        repository = get_object_or_404(
-            Repository,
-            slug=self.kwargs['repository_slug'],
-            user=self.request.user
-        )
-        return File.objects.filter(repository=repository)
+        try:
+            repository = get_object_or_404(
+                Repository,
+                slug=self.kwargs['repository_slug']
+            )
+            if not repository.user_has_access(self.request.user):
+                return File.objects.none()
+            return File.objects.filter(repository=repository)
+        except Exception as e:
+            logger.error(f"Error in get_queryset: {str(e)}")
+            return File.objects.none()
+
+    def retrieve(self, request, *args, **kwargs):
+        try:
+            instance = self.get_object()
+            
+            # Check access permission
+            if not instance.user_has_access(request.user):
+                return Response(
+                    {'error': 'Access denied'},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+            
+            serializer = self.get_serializer(instance)
+            
+            # Read actual file content
+            file_path = os.path.join(instance.repository.location, instance.path)
+            if os.path.exists(file_path):
+                try:
+                    with open(file_path, 'r', encoding='utf-8') as f:
+                        content = f.read()
+                    data = serializer.data
+                    data['content'] = content
+                    return Response(data)
+                except UnicodeDecodeError:
+                    logger.warning(f"Binary file detected: {file_path}")
+                    return Response(
+                        {'error': 'Cannot read binary file'},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+                except Exception as e:
+                    logger.error(f"Error reading file {file_path}: {str(e)}")
+                    return Response(
+                        {'error': f'Error reading file: {str(e)}'},
+                        status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                    )
+            else:
+                return Response(
+                    {'error': 'File not found on disk'},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+                
+        except Exception as e:
+            logger.error(f"Error retrieving file: {str(e)}")
+            return Response(
+                {'error': f'Error retrieving file: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
 
     def get_serializer_context(self):
         context = super().get_serializer_context()
-        context['repository'] = get_object_or_404(
-            Repository,
-            slug=self.kwargs['repository_slug'],
-            user=self.request.user
+        repository = get_object_or_404(
+            Repository.objects.filter(
+                Q(user=self.request.user) | 
+                Q(collaborators=self.request.user)
+            ),
+            slug=self.kwargs['repository_slug']
         )
+        context['repository'] = repository
         return context
 
     @transaction.atomic
@@ -187,43 +320,83 @@ class FileViewSet(viewsets.ModelViewSet):
         repository = self.get_serializer_context()['repository']
         file_path = os.path.join(repository.location, serializer.validated_data['path'])
         
+        # Ensure file path is within repository
         if not file_path.startswith(repository.location):
-            raise serializers.ValidationError(
-                {'error': 'Invalid file path'}
-            )
+            raise serializers.ValidationError({'error': 'Invalid file path'})
 
         try:
+            # Create directories if needed
             os.makedirs(os.path.dirname(file_path), exist_ok=True)
+            
+            # Write file content
             with open(file_path, 'w', encoding='utf-8') as f:
                 f.write(serializer.validated_data.get('content', ''))
+            
+            # Save to database
             serializer.save(repository=repository)
+
+            # Git operations
+            try:
+                subprocess.run(['git', 'add', serializer.validated_data['path']], 
+                             cwd=repository.location, check=True)
+                subprocess.run(['git', 'commit', '-m', f'Add {serializer.validated_data["path"]}'],
+                             cwd=repository.location, check=True)
+            except subprocess.CalledProcessError as e:
+                logger.warning(f"Git operations failed: {e.stderr}")
+
         except OSError as e:
-            raise serializers.ValidationError(
-                {'error': f'File operation failed: {str(e)}'}
-            )
+            raise serializers.ValidationError({'error': f'File operation failed: {str(e)}'})
 
     @transaction.atomic
     def perform_update(self, serializer):
-        """Handle file content updates and sync with filesystem."""
-        instance = self.get_object()  # The file being updated
+        instance = self.get_object()
         repository = instance.repository
         file_path = os.path.join(repository.location, instance.path)
 
         if not file_path.startswith(repository.location):
             raise serializers.ValidationError({'error': 'Invalid file path'})
 
-        # Save updated data to database
-        serializer.save()
-
-        # Sync updated content to filesystem
         try:
+            # Update file content
             with open(file_path, 'w', encoding='utf-8') as f:
                 f.write(serializer.validated_data.get('content', instance.content))
             
+            # Save to database
+            serializer.save()
+
+            # Git operations
+            try:
+                subprocess.run(['git', 'add', instance.path], 
+                             cwd=repository.location, check=True)
+                subprocess.run(['git', 'commit', '-m', f'Update {instance.path}'],
+                             cwd=repository.location, check=True)
+            except subprocess.CalledProcessError as e:
+                logger.warning(f"Git operations failed: {e.stderr}")
+
             # Trigger auto-commit after file is saved
             auto_commit_changes(repository.id)
             
         except OSError as e:
-            raise serializers.ValidationError(
-                {'error': f'File operation failed: {str(e)}'}
-            )
+            raise serializers.ValidationError({'error': f'File operation failed: {str(e)}'})
+
+    def perform_destroy(self, instance):
+        if instance.repository.user != self.request.user:
+            raise PermissionDenied('Only repository owner can delete files')
+
+        file_path = os.path.join(instance.repository.location, instance.path)
+        try:
+            if os.path.exists(file_path):
+                os.remove(file_path)
+                
+                # Git operations
+                try:
+                    subprocess.run(['git', 'rm', instance.path], 
+                                 cwd=instance.repository.location, check=True)
+                    subprocess.run(['git', 'commit', '-m', f'Delete {instance.path}'],
+                                 cwd=instance.repository.location, check=True)
+                except subprocess.CalledProcessError as e:
+                    logger.warning(f"Git operations failed: {e.stderr}")
+
+            super().perform_destroy(instance)
+        except OSError as e:
+            raise serializers.ValidationError({'error': f'File deletion failed: {str(e)}'})
