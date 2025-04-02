@@ -28,6 +28,7 @@ urlpatterns = [
     path('collab/', include('collab.urls')),
     path('acs/', include('autocommit.urls')),
 
+    path('api/', include('codegen.urls')),
 
     #api docs setup
     path('api/schema/', SpectacularAPIView.as_view(), name='schema'),
