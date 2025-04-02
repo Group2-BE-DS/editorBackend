@@ -15,6 +15,8 @@ from .models import Repository, File
 from .serializers import RepositorySerializer, FileSerializer
 from .permissions import IsOwnerOrCollaborator
 
+from autocommit.tasks import auto_commit_changes
+
 User = get_user_model()
 logger = logging.getLogger(__name__)
 
@@ -371,6 +373,9 @@ class FileViewSet(viewsets.ModelViewSet):
             except subprocess.CalledProcessError as e:
                 logger.warning(f"Git operations failed: {e.stderr}")
 
+            # Trigger auto-commit after file is saved
+            auto_commit_changes(repository.id)
+            
         except OSError as e:
             raise serializers.ValidationError({'error': f'File operation failed: {str(e)}'})
 

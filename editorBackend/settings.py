@@ -32,6 +32,7 @@ ALLOWED_HOSTS = ['*']
 # Application definition
 
 INSTALLED_APPS = [
+    'daphne',  # Add this first
     'django.contrib.admin',
     'django.contrib.auth',
     'django.contrib.contenttypes',
@@ -42,6 +43,7 @@ INSTALLED_APPS = [
     #our apps
     'collab',
     'filesys',
+    'autocommit',
 
     #added dependenciies
     'channels',
@@ -93,6 +95,8 @@ MIDDLEWARE = [
     #added middleware
     'allauth.account.middleware.AccountMiddleware',
     'whitenoise.middleware.WhiteNoiseMiddleware',
+
+    'debug_toolbar.middleware.DebugToolbarMiddleware',  # Add this if not present
 ]
 
 ROOT_URLCONF = 'editorBackend.urls'
@@ -203,7 +207,9 @@ LOGGING = {
             'handlers': ['console'],
             'level': 'INFO',
         },
+
         'filesys': {  # Add logger for your app
+        'django.request': {
             'handlers': ['console'],
             'level': 'DEBUG',
             'propagate': True,
@@ -223,3 +229,10 @@ CACHES = {
 
 # Add this setting to control token expiry
 COLLAB_TOKEN_EXPIRY = 3600  # 1 hour in seconds
+
+# Channel Layers configuration
+CHANNEL_LAYERS = {
+    "default": {
+        "BACKEND": "channels.layers.InMemoryChannelLayer"
+    }
+}
