@@ -239,6 +239,29 @@ Thumbs.db
                 status=status.HTTP_404_NOT_FOUND
             )
 
+    @action(detail=True, methods=['get'], url_path='git-logs')
+    def get_git_logs(self, request, slug=None):
+        """
+        Get git commit history for the repository
+        """
+        repository = self.get_object()
+        
+        try:
+            # Get count parameter from query string, default to 10
+            count = int(request.query_params.get('count', 10))
+            logs = repository.get_git_logs(count)
+            
+            return Response({
+                'repository': repository.name,
+                'logs': logs
+            })
+        except Exception as e:
+            logger.error(f"Error fetching git logs: {str(e)}")
+            return Response(
+                {"error": "Failed to fetch git logs", "details": str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
 class FileViewSet(viewsets.ModelViewSet):
     serializer_class = FileSerializer
     permission_classes = [permissions.IsAuthenticated, IsOwnerOrCollaborator]

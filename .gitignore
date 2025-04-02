@@ -62,3 +62,7 @@ media/
 .DS_Store
 
 c3/
+
+# Logs
+logs/
+*.log

@@ -1,3 +1,4 @@
+import json
 from django.db import models
 from django.conf import settings
 import subprocess
@@ -40,6 +41,40 @@ class Repository(models.Model):
             return result.stdout
         except subprocess.CalledProcessError:
             return "Git status unavailable"
+
+    def get_git_logs(self, count=10):
+        """
+        Get git commit history for the repository
+        
+        Args:
+            count (int): Number of commits to fetch
+            
+        Returns:
+            list: List of commit dictionaries containing hash, author, date, and message
+        """
+        try:
+            # Get git logs with pretty format
+            result = subprocess.run(
+                ['git', 'log', f'-{count}', 
+                 '--pretty=format:{%n  "commit": "%H",%n  "author": "%an",%n  "date": "%ad",%n  "message": "%s"%n},'],
+                cwd=self.location,
+                capture_output=True,
+                text=True,
+                check=True
+            )
+            
+            if result.stdout:
+                # Format the output as proper JSON
+                json_str = f"[{result.stdout.rstrip(',')}]"
+                return json.loads(json_str)
+            return []
+            
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Git log command failed: {e.stderr}")
+            return []
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse git log output: {e}")
+            return []
 
     def user_has_access(self, user):
         """Check if user has access (owner or collaborator)"""
