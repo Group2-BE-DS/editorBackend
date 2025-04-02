@@ -1,9 +1,12 @@
 import json
+import logging
 from django.db import models
 from django.conf import settings
 import subprocess
 import magic  # Works with python-magic-bin on Windows
 from django.utils.text import slugify
+
+logger = logging.getLogger(__name__)
 
 class Repository(models.Model):
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
@@ -42,21 +45,26 @@ class Repository(models.Model):
         except subprocess.CalledProcessError:
             return "Git status unavailable"
 
-    def get_git_logs(self, count=10):
+    def get_git_logs(self, count=10, branch=None):
         """
         Get git commit history for the repository
         
         Args:
             count (int): Number of commits to fetch
+            branch (str): Branch name. If None, shows all history
             
         Returns:
             list: List of commit dictionaries containing hash, author, date, and message
         """
         try:
-            # Get git logs with pretty format
+            cmd = ['git', 'log', f'-{count}', 
+                  '--pretty=format:{%n  "commit": "%H",%n  "author": "%an",%n  "date": "%ad",%n  "message": "%s"%n},']
+            
+            if branch:
+                cmd.append(branch)
+                
             result = subprocess.run(
-                ['git', 'log', f'-{count}', 
-                 '--pretty=format:{%n  "commit": "%H",%n  "author": "%an",%n  "date": "%ad",%n  "message": "%s"%n},'],
+                cmd,
                 cwd=self.location,
                 capture_output=True,
                 text=True,

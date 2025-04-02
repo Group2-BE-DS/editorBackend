@@ -247,12 +247,14 @@ Thumbs.db
         repository = self.get_object()
         
         try:
-            # Get count parameter from query string, default to 10
             count = int(request.query_params.get('count', 10))
-            logs = repository.get_git_logs(count)
+            branch = request.query_params.get('branch')  # Optional branch parameter
+            
+            logs = repository.get_git_logs(count=count, branch=branch)
             
             return Response({
                 'repository': repository.name,
+                'branch': branch or 'all',
                 'logs': logs
             })
         except Exception as e:
