@@ -2,6 +2,9 @@ import os
 import shutil
 import subprocess
 import logging
+import stat
+import time
+from pathlib import Path
 from django.db.models import Q
 from django.contrib.auth import get_user_model
 from rest_framework import viewsets, permissions, serializers, status
@@ -102,15 +105,55 @@ Thumbs.db
                 {'error': f'Directory creation failed: {str(e)}'}
             )
 
+    def _remove_readonly(self, func, path, excinfo):
+        """Helper function to handle readonly files on Windows"""
+        try:
+            # Make the file writable and try operation again
+            os.chmod(path, stat.S_IWRITE)
+            func(path)
+        except Exception as e:
+            logger.error(f"Failed to remove {path}: {str(e)}")
+
     def perform_destroy(self, instance):
         try:
             if os.path.exists(instance.location):
-                shutil.rmtree(instance.location)
+                repo_path = Path(instance.location)
+                
+                # First, try to remove any read-only flags
+                for path in repo_path.rglob('*'):
+                    try:
+                        path.chmod(stat.S_IWRITE | stat.S_IREAD)
+                    except Exception as e:
+                        logger.warning(f"Could not change permissions for {path}: {str(e)}")
+
+                # Give OS a moment to release any file handles
+                time.sleep(0.5)
+                
+                # Try to remove the directory tree
+                try:
+                    shutil.rmtree(
+                        instance.location, 
+                        onerror=self._remove_readonly,
+                        ignore_errors=True
+                    )
+                except Exception as e:
+                    logger.error(f"First rmtree attempt failed: {str(e)}")
+                    # If first attempt fails, wait and try again
+                    time.sleep(1)
+                    shutil.rmtree(
+                        instance.location, 
+                        onerror=self._remove_readonly,
+                        ignore_errors=True
+                    )
+
+            # Delete the database record
             super().perform_destroy(instance)
-        except OSError as e:
-            raise serializers.ValidationError(
-                {'error': f'Directory deletion failed: {str(e)}'}
-                )
+
+        except Exception as e:
+            logger.error(f"Repository deletion failed: {str(e)}")
+            raise serializers.ValidationError({
+                'error': f'Repository deletion failed. Please try again or contact support if the issue persists.'
+            })
 
     @action(detail=True, methods=['get'], url_path='contents')
     def get_contents(self, request, pk=None):
