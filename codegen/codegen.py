@@ -8,7 +8,7 @@ import google.generativeai as genai
 from google.generativeai.types import HarmCategory, HarmBlockThreshold
 
 # Configuration
-API_KEY = "AIzaSyB8FunrHdiub5Xsp7PaploytkC0XzUlS8k"  # Replace with your actual API key or set GEMINI_API_KEY env variable
+API_KEY = "#"  # Replace with your actual API key or set GEMINI_API_KEY env variable
 MODEL_NAME = "gemini-1.5-pro"  # Verify this is a valid model
 PROJECT_CONFIG_FILE = ".codegenrc"
 

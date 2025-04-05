@@ -1,7 +1,8 @@
 # codegen_app/urls.py
 from django.urls import path
-from . import views
+from .views import generate_code, GenerateDocsView
 
 urlpatterns = [
-    path('generate-code/', views.generate_code, name='generate_code'),
+    path('generate-code/', generate_code, name='generate-code'),
+    path('generate-docs/<path:repo_slug>/', GenerateDocsView.as_view(), name='generate-docs'),
 ]
