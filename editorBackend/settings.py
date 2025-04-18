@@ -63,8 +63,16 @@ INSTALLED_APPS = [
 ]
 
 SITE_ID = 1  # Required by allauth
-ACCOUNT_EMAIL_REQUIRED = True
-ACCOUNT_USERNAME_REQUIRED = False  # Since Electron apps might not need usernames
+
+# Replace the deprecated settings
+ACCOUNT_SIGNUP_FIELDS = [
+    'username*',      # * indicates required field
+    'password1*',  # * indicates required field
+    'password2*'   # * indicates required field
+]
+
+ACCOUNT_LOGIN_METHODS = ['username']  # Specify login methods explicitly
+
 ACCOUNT_EMAIL_VERIFICATION = "optional"  # Change to "mandatory" if needed
 
 REST_FRAMEWORK = {
