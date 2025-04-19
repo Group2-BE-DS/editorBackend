@@ -6,8 +6,8 @@ from django.conf import settings
 from .serializers import VerificationCodeSerializer
 from filesys.models import Repository
 from django.shortcuts import get_object_or_404
+from django.contrib.auth import get_user_model
 from .token_store import TokenStore
-import base64
 import random
 import string
 
@@ -26,17 +26,49 @@ class VerificationCodeAPI(APIView):
                 Repository, 
                 slug=serializer.validated_data['repoSlug']
             )
-            emails = serializer.validated_data['emails']
+            usernames = serializer.validated_data['usernames']
 
-            # Generate verification code
-            code = ''.join(random.choices(string.digits, k=8))
-            code_bytes = code.encode('ascii')
-            base64_code = base64.b64encode(code_bytes).decode('ascii')
+            # Get User model and add creator to collaborators list
+            User = get_user_model()
+            creator = request.user
+            all_usernames = list(set(usernames + [creator.username]))
+            users = User.objects.filter(username__in=all_usernames)
+            
+            if not users:
+                return Response({
+                    'detail': 'No valid users found'
+                }, status=status.HTTP_404_NOT_FOUND)
+
+            # Get users' emails
+            emails = [user.email for user in users]
+            
+            # First add users as collaborators
+            for user in users:
+                repository.collaborators.add(user)
+            repository.save()
+
+            # Generate a 12-character token using URL-safe characters
+            token = ''.join(random.choices(
+                string.ascii_letters + string.digits + '-_',  # URL-safe characters
+                k=12
+            ))
 
             # Store token with repository info
-            TokenStore.add_token(base64_code, repository.slug)
+            if not TokenStore.add_token(token, repository.slug):
+                repository.collaborators.remove(*users)  # Rollback collaborator changes
+                return Response({
+                    'detail': 'Failed to store collaboration token'
+                }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-            # HTML email template
+            # Verify token was stored
+            if not TokenStore.verify_token(token):
+                TokenStore.remove_token(token)
+                repository.collaborators.remove(*users)  # Rollback collaborator changes
+                return Response({
+                    'detail': 'Failed to verify stored token'
+                }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+            # Send email notification
             html_content = f"""
             <!DOCTYPE html>
             <html lang="en">
@@ -60,8 +92,8 @@ class VerificationCodeAPI(APIView):
                     </div>
 
                     <div style="background-color: #3B82F6; color: white; padding: 20px; border-radius: 8px; text-align: center; margin-bottom: 30px;">
-                        <h3 style="margin: 0 0 10px 0;">Your Verification Code</h3>
-                        <div style="font-size: 24px; font-weight: bold; letter-spacing: 2px;">{base64_code}</div>
+                        <h3 style="margin: 0 0 10px 0;">Your Collaboration Code</h3>
+                        <div style="font-size: 24px; font-weight: bold; letter-spacing: 2px;">{token}</div>
                     </div>
 
                     <div style="border-top: 1px solid #e2e8f0; padding-top: 20px; margin-top: 20px;">
@@ -73,33 +105,32 @@ class VerificationCodeAPI(APIView):
             </body>
             </html>
             """
-
-            # Plain text version for email clients that don't support HTML
+            
             text_content = f"""
             Collaboration Invitation
 
             You've been invited to collaborate on the repository: {repository.slug}
+            Your collaboration code: {token}
 
-            Your verification code is: {code}
-            Token to connect: {base64_code}
-
+            Use this code to join the collaboration session.
             Please do not reply to this email.
             """
 
-            # Send email with both HTML and plain text versions
+            # Send email with notifications
             send_mail(
                 subject='C.C.C - Collaboration Invitation',
                 message=text_content,
                 html_message=html_content,
-                from_email=f'C.C.C <{settings.EMAIL_HOST_USER}>',  # Using a friendly from name
+                from_email=f'C.C.C <{settings.EMAIL_HOST_USER}>',
                 recipient_list=emails,
                 fail_silently=False,
             )
 
             return Response({
-                'message': 'Verification code sent successfully',
-                'code': base64_code,
-                'repository_slug': repository.slug
+                'message': 'Collaboration setup successful',
+                'code': token,
+                'repository_slug': repository.slug,
+                'added_collaborators': list(users.values_list('username', flat=True))
             })
 
         except Repository.DoesNotExist:
@@ -109,4 +140,50 @@ class VerificationCodeAPI(APIView):
         except Exception as e:
             return Response({
                 'detail': str(e)
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+class VerifyUserAPI(APIView):
+    def get(self, request, username):
+        User = get_user_model()
+        try:
+            user = User.objects.get(username=username)
+            return Response({
+                'exists': True,
+                'username': user.username
+            })
+        except User.DoesNotExist:
+            return Response({
+                'exists': False,
+                'detail': 'User not found'
+            }, status=status.HTTP_404_NOT_FOUND)
+
+class VerifyCodeAPI(APIView):
+    def get(self, request, code):
+        try:
+            # The code is already URL-safe base64, no need to decode URL encoding
+            decoded_code = code.strip()  # Remove any whitespace
+
+            # Verify token exists and is valid
+            if TokenStore.verify_token(decoded_code):
+                repo_slug = TokenStore.get_repository_slug(decoded_code)
+                if not repo_slug:
+                    return Response({
+                        'valid': False,
+                        'detail': 'Repository not found for token'
+                    }, status=status.HTTP_400_BAD_REQUEST)
+                    
+                return Response({
+                    'valid': True,
+                    'repository_slug': repo_slug
+                })
+            else:
+                return Response({
+                    'valid': False,
+                    'detail': 'Invalid or expired verification code'
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+        except Exception as e:
+            return Response({
+                'valid': False,
+                'detail': f'Error validating code: {str(e)}'
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

@@ -87,12 +87,29 @@ REST_FRAMEWORK = {
 }
 
 CORS_ALLOWED_ORIGINS = [
-    'http://127.0.0.1:8000',
-    'http://localhost:8000',
+    'http://localhost:3000',
+    'http://127.0.0.1:3000',
+    'http://localhost:5000',
+    'http://127.0.0.1:5000',
 ]
+
+CORS_ALLOW_CREDENTIALS = True
+
+# Allow WebSocket connections
+CORS_ALLOWED_ORIGIN_REGEXES = [
+    r"^http://localhost:\d+$",
+    r"^http://127\.0\.0\.1:\d+$",
+]
+
+CORS_ALLOW_ALL_ORIGINS = True  # For development only
+CORS_ALLOW_METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS']
+CORS_ALLOW_HEADERS = ['*']
+
 CSRF_TRUSTED_ORIGINS = [
     'http://127.0.0.1:8000',
     'http://localhost:8000',
+    'ws://127.0.0.1:8000',
+    'ws://localhost:8000'
 ]
 
 MIDDLEWARE = [
@@ -182,12 +199,20 @@ USE_TZ = True
 STATIC_URL = '/static/'
 STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
 
+# Add this setting for additional static file directories
+STATICFILES_DIRS = [
+    os.path.join(BASE_DIR, 'static'),
+]
+
 STATICFILES_STORAGE = 'django.contrib.staticfiles.storage.ManifestStaticFilesStorage'
 
 STATICFILES_FINDERS = [
     'django.contrib.staticfiles.finders.FileSystemFinder',
     'django.contrib.staticfiles.finders.AppDirectoriesFinder',
 ]
+
+# Create static directory if it doesn't exist
+os.makedirs(os.path.join(BASE_DIR, 'static'), exist_ok=True)
 
 MEDIA_URL = '/media/'
 
@@ -268,7 +293,15 @@ COLLAB_TOKEN_EXPIRY = 3600  # 1 hour in seconds
 
 # Channel Layers configuration
 CHANNEL_LAYERS = {
-    "default": {
-        "BACKEND": "channels.layers.InMemoryChannelLayer"
-    }
+    'default': {
+        'BACKEND': 'channels_redis.core.RedisChannelLayer',
+        'CONFIG': {
+            "hosts": [('127.0.0.1', 6379)],
+        },
+    },
+}
+
+# Increase WebSocket timeout
+CHANNEL_LAYERS_CONFIG = {
+    "connection_timeout_seconds": 60,
 }

@@ -1,386 +1,269 @@
 import json
 import logging
-import urllib.parse
-import os
 from channels.generic.websocket import AsyncWebsocketConsumer
-from channels.db import database_sync_to_async
-from django.shortcuts import get_object_or_404
 from .token_store import TokenStore
-from .ot import TextOperation, compose_operations
+import asyncio
 from datetime import datetime
+import random
+import string
 
 logger = logging.getLogger(__name__)
 
-class MyConsumer(AsyncWebsocketConsumer):
-    file_clients = {}
-    collaboration_rooms = {}  # Store room -> set of clients mapping
-    file_contents = {}  # In-memory content cache
-    file_operations = {}  # Store operations per file
-    room_users = {}  # Store user info per room
-
-    @database_sync_to_async
-    def get_file_and_content(self, file_id):
-        from filesys.models import File  # Import inside function
-        file_instance = get_object_or_404(File, id=file_id)
-        file_path = os.path.join(file_instance.repository.location, file_instance.path)
-        
-        logger.info(f"Attempting to read file: {file_path}")
-        
-        if not os.path.exists(file_path):
-            logger.warning(f"File not found at path: {file_path}")
-            return file_instance, ""
-        
-        try:
-            with open(file_path, 'r', encoding='utf-8') as f:
-                content = f.read()
-            logger.info(f"Successfully read file content, length: {len(content)}")
-            # Cache the content
-            self.file_contents[file_id] = content
-            self.file_operations[file_id] = []
-            return file_instance, content
-        except Exception as e:
-            logger.error(f"Error reading file: {str(e)}")
-            raise
-
-    @database_sync_to_async
-    def verify_file_access(self, file_id):
-        from filesys.models import File
-        file_instance = get_object_or_404(File, id=file_id)
-        # Add your permission logic here if needed
-        return True
-
-    @database_sync_to_async
-    def get_file_instance(self, file_id):
-        from filesys.models import File
-        file_instance = get_object_or_404(File, id=file_id)
-        return file_instance
-
-    @database_sync_to_async
-    def write_file_content(self, file_path, content):
-        """Synchronously write content to file"""
-        with open(file_path, 'w', encoding='utf-8') as f:
-            f.write(content)
-
+class EditorConsumer(AsyncWebsocketConsumer):
     async def connect(self):
         logger.info("WebSocket connection attempt")
+        await self.accept()
         
-        try:
-            query_string = self.scope['query_string'].decode('utf-8')
-            query_params = dict(urllib.parse.parse_qsl(query_string))
-            token = query_params.get('token')
-            
-            # Get user from scope
-            user = self.scope.get('user')
-            username = user.username if user and user.is_authenticated else 'Anonymous'
-            
-            if token:
-                if TokenStore.verify_token(token):
-                    logger.info(f"Collaboration token verified: {token}")
-                    await self.accept()
-                    
-                    # Set up collaboration room
-                    if token not in self.collaboration_rooms:
-                        self.collaboration_rooms[token] = set()
-                        self.room_users[token] = {}
-                    
-                    join_time = datetime.now().isoformat()
-                    user_id = str(hash(self))
-                    
-                    self.collaboration_rooms[token].add(self)
-                    self.room_users[token][self] = {
-                        'username': username,
-                        'joined_at': join_time,
-                        'id': user_id
-                    }
-                    
-                    # Get list of all users in room
-                    users_in_room = list(self.room_users[token].values())
-                    
-                    # Notify all clients in room about the new user
-                    room_message = {
-                        'type': 'collaboration_update',
-                        'event': 'user_joined',
-                        'user': {
-                            'username': username,
-                            'joined_at': join_time,
-                            'id': user_id
-                        },
-                        'users': users_in_room,
-                        'total_users': len(users_in_room)
-                    }
-                    
-                    await self.broadcast_room_message(token, room_message)
-                else:
-                    logger.warning(f"Invalid collaboration token: {token}")
-                    await self.close(code=4001)
-            else:
-                await self.accept()
-                logger.info("Base WebSocket connection established")
-                
-        except Exception as e:
-            logger.error(f"Connection error: {str(e)}")
-            await self.close(code=4002)
+        # Initialize consumer state
+        self.user_id = ''.join(random.choices(string.digits, k=20))
+        self.username = "Anonymous"
+        self.joined_at = datetime.now().isoformat()
+        self.status = 'active'
+        self.is_collaborative = False
+        self.token = None
+        self.repository_slug = None
+        self.room_name = None
+        self.room_group_name = None
+        
+        logger.info(f"Connection accepted for user: {self.username} ({self.user_id})")
+        logger.info("Waiting for initial message with token...")
 
     async def disconnect(self, close_code):
-        logger.info(f"WebSocket disconnected with code: {close_code}")
-        username = self.scope.get('user').username if self.scope.get('user') else 'Anonymous'
+        logger.info(f"WebSocket disconnected for user {self.user_id} with code: {close_code}")
         
-        # Remove from collaboration rooms and notify others
-        for token, clients in list(self.collaboration_rooms.items()):
-            if self in clients:
-                clients.remove(self)
-                user_info = self.room_users[token].pop(self, None)
+        if self.is_collaborative and self.room_group_name:
+            # Remove user from room group
+            await self.channel_layer.group_discard(
+                self.room_group_name,
+                self.channel_name
+            )
+            
+            if self.token:
+                # Remove connection and notify others
+                TokenStore.remove_connection(self.token, self.user_id)
+                remaining_users = TokenStore.get_connections(self.token)
                 
-                if user_info:
-                    # Notify remaining clients about user leaving
-                    leave_message = {
-                        'type': 'collaboration_update',
-                        'event': 'user_left',
-                        'user': user_info,
-                        'users': list(self.room_users[token].values()),
-                        'total_users': len(self.room_users[token])
+                await self.channel_layer.group_send(
+                    self.room_group_name,
+                    {
+                        'type': 'user_left',
+                        'user_id': self.user_id,
+                        'username': self.username,
+                        'remaining_users': remaining_users
                     }
-                    
-                    await self.broadcast_room_message(token, leave_message)
-                
-                if not clients:
-                    del self.collaboration_rooms[token]
-                    del self.room_users[token]
-                    TokenStore.remove_token(token)
-
-        # Remove from file clients
-        for file_id, clients in self.file_clients.items():
-            if self in clients:
-                clients.remove(self)
-                if not clients:
-                    del self.file_clients[file_id]
+                )
 
     async def receive(self, text_data):
         try:
             data = json.loads(text_data)
             message_type = data.get('type')
-            file_id = data.get('fileId')
+            logger.info(f"Received message from user {self.user_id} - Type: {message_type}")
             
-            logger.info(f"Received message - Type: {message_type}, FileID: {file_id}")
-
-            if not message_type or not file_id:
-                raise ValueError("Missing required fields")
-
-            if message_type == 'openFile':
-                logger.info(f"Processing openFile request for file_id: {file_id}")
-                await self.handle_open_file(file_id)
+            if message_type == 'init':
+                await self.handle_init(data)
+            elif message_type == 'openFile':
+                await self.handle_open_file(data)
             elif message_type == 'codeUpdate':
-                content = data.get('content')
-                if content is None:
-                    raise ValueError("Missing content field")
-                logger.info(f"Processing codeUpdate request for file_id: {file_id}")
-                await self.handle_code_update(file_id, content)
-            elif message_type == 'operation':
-                # Handle OT operation
-                await self.handle_operation(
-                    data.get('fileId'),
-                    data.get('operation'),
-                    data.get('revision')
-                )
-            elif message_type == 'saveFile':
-                # Handle explicit save request
-                await self.handle_save_file(data.get('fileId'))
+                await self.handle_code_update(data)
             else:
-                raise ValueError(f"Unknown message type: {message_type}")
-
-        except json.JSONDecodeError as e:
-            logger.error(f"Invalid JSON: {str(e)}")
-            await self.send_error("Invalid message format")
+                logger.warning(f"Unknown message type from user {self.user_id}: {message_type}")
+                
+        except json.JSONDecodeError:
+            logger.error(f"Invalid JSON received from user {self.user_id}")
         except Exception as e:
-            logger.error(f"Error processing message: {str(e)}")
-            await self.send_error(str(e))
+            logger.error(f"Error processing message from user {self.user_id}: {str(e)}")
 
-    async def handle_open_file(self, file_id):
-        try:
-            # Verify access before proceeding
-            if not await self.verify_file_access(file_id):
-                raise PermissionError("Access denied to this file")
-            
-            logger.info(f"Getting file content for file_id: {file_id}")
-            file_instance, content = await self.get_file_and_content(file_id)
-            
-            logger.info(f"Adding client to file_clients for file_id: {file_id}")
-            if file_id not in self.file_clients:
-                self.file_clients[file_id] = []
-            self.file_clients[file_id].append(self)
+    async def handle_init(self, data):
+        """Handle initial connection setup with token verification"""
+        token = data.get('token', '').strip()
+        logger.info(f"Processing init message from user {self.user_id} with token: {token[:10] if token else 'None'}...")
+        
+        if not token:
+            logger.warning(f"No token provided by user {self.user_id}")
+            await self.send(json.dumps({
+                'type': 'solo_mode',
+                'message': 'No token provided, working in solo mode'
+            }))
+            return
 
-            # Add debug logging
-            logger.info(f"File content: {content[:100]}...")  # Log first 100 chars
+        # Verify token and get repository info
+        if TokenStore.verify_token(token):
+            logger.info(f"Token verified successfully for user {self.user_id}")
+            self.token = token
+            self.repository_slug = TokenStore.get_repository_slug(token)
             
-            response_data = {
-                'type': 'fileData',
-                'fileId': file_id,
+            if not self.repository_slug:
+                logger.error(f"No repository slug found for token (user: {self.user_id})")
+                await self.send(json.dumps({
+                    'type': 'error',
+                    'message': 'Invalid repository'
+                }))
+                return
+                
+            logger.info(f"Retrieved repository slug for user {self.user_id}: {self.repository_slug}")
+            
+            # Add user connection to token store
+            if TokenStore.add_connection(token, self.user_id, self.username):
+                self.is_collaborative = True
+                self.room_name = self.repository_slug.replace('/', '_')
+                self.room_group_name = f'editor_{self.room_name}'
+                
+                # Join room group
+                await self.channel_layer.group_add(
+                    self.room_group_name,
+                    self.channel_name
+                )
+                
+                # Get current users in room
+                connected_users = TokenStore.get_connections(token)
+                logger.info(f"Users in room {self.room_group_name}: {connected_users}")
+                
+                # Notify current user about successful connection
+                await self.send(json.dumps({
+                    'type': 'connected',
+                    'repository': self.repository_slug,
+                    'user_id': self.user_id,
+                    'users': connected_users
+                }))
+                
+                # Notify others about new user
+                user_info = {
+                    'username': self.username,
+                    'id': self.user_id,
+                    'joined_at': self.joined_at,
+                    'status': self.status
+                }
+                
+                await self.channel_layer.group_send(
+                    self.room_group_name,
+                    {
+                        'type': 'user_joined',
+                        'user': user_info
+                    }
+                )
+                
+                logger.info(f"Successfully completed collaboration setup for user {self.user_id}")
+            else:
+                logger.error(f"Failed to add user connection for {self.user_id}")
+                await self.send(json.dumps({
+                    'type': 'error',
+                    'message': 'Failed to join collaboration'
+                }))
+        else:
+            logger.warning(f"Invalid token provided by user {self.user_id}, falling back to solo mode")
+            await self.send(json.dumps({
+                'type': 'solo_mode',
+                'message': 'Invalid token, working in solo mode'
+            }))
+
+    async def handle_code_update(self, data):
+        """Handle real-time code updates"""
+        if not self.is_collaborative:
+            logger.warning(f"Received code update from user {self.user_id} in solo mode")
+            return
+            
+        file_id = data.get('fileId')
+        content = data.get('content')
+        
+        if not file_id or content is None:
+            logger.error(f"Missing fileId or content in codeUpdate message from user {self.user_id}")
+            return
+            
+        logger.info(f"Broadcasting code update for file {file_id} from user {self.user_id}")
+        
+        # Broadcast to all users in the room
+        await self.channel_layer.group_send(
+            self.room_group_name,
+            {
+                'type': 'code_updated',
+                'user_id': self.user_id,
+                'file_id': file_id,
                 'content': content,
+                'timestamp': datetime.now().isoformat()
             }
-            logger.info(f"Sending file data - FileID: {file_id}, Content length: {len(content)}")
-            await self.send(text_data=json.dumps(response_data))
-            logger.info("File data sent successfully")
+        )
 
-        except Exception as e:
-            logger.error(f"Error opening file: {str(e)}")
-            await self.send_error(f"Failed to open file: {str(e)}")
-            raise  # Re-raise to see full traceback in logs
+    async def code_updated(self, event):
+        """Handle code updated event from other users"""
+        if event['user_id'] != self.user_id:  # Don't send back to sender
+            logger.info(f"Received code update from user {event['user_id']} for file {event['file_id']}")
+            await self.send(json.dumps({
+                'type': 'codeUpdate',
+                'user_id': event['user_id'],
+                'file_id': event['file_id'],
+                'content': event['content'],
+                'timestamp': event['timestamp']
+            }))
 
-    @database_sync_to_async
-    def update_file_content(self, file_id, content):
-        """Handle all synchronous file operations in one place"""
-        from filesys.models import File
-        file_instance = get_object_or_404(File, id=file_id)
-        file_path = os.path.join(file_instance.repository.location, file_instance.path)
+    async def get_connected_users(self):
+        """Get list of currently connected users in the room"""
+        if not self.is_collaborative or not self.token:
+            return []
+            
+        # Get all connections for this token
+        users = []
+        connections = TokenStore.get_connections(self.token)
+        if connections:
+            for user_id in connections:
+                users.append({
+                    'username': 'Anonymous',  # For now, all users are anonymous
+                    'joined_at': self.joined_at,
+                    'id': user_id,
+                    'status': 'active',
+                    'last_activity': datetime.now().isoformat()
+                })
+        return users
+
+    async def user_joined(self, event):
+        """Handle user joined event"""
+        if event['user']['id'] != self.user_id:  # Don't send back to sender
+            logger.info(f"User {event['user']['id']} joined room {self.room_group_name}")
+            await self.send(json.dumps({
+                'type': 'user_joined',
+                'user': event['user']
+            }))
+
+    async def user_left(self, event):
+        """Handle user left event"""
+        if event['user_id'] != self.user_id:  # Don't send back to sender
+            logger.info(f"User {event['user_id']} left room {self.room_group_name}")
+            await self.send(json.dumps({
+                'type': 'user_left',
+                'user_id': event['user_id'],
+                'username': event['username'],
+                'remaining_users': event.get('remaining_users', [])
+            }))
+
+    async def handle_open_file(self, data):
+        """Handle file open requests"""
+        file_id = data.get('fileId')
         
-        # Write content to file
-        with open(file_path, 'w', encoding='utf-8') as f:
-            f.write(content)
+        if not file_id:
+            logger.error(f"No file ID provided in openFile message from user {self.user_id}")
+            return
+            
+        logger.info(f"Processing openFile request from user {self.user_id} for file_id: {file_id}")
         
-        return file_instance
+        # For collaboration, notify others about file open
+        if self.is_collaborative:
+            await self.channel_layer.group_send(
+                self.room_group_name,
+                {
+                    'type': 'file_opened',
+                    'user_id': self.user_id,
+                    'file_id': file_id
+                }
+            )
 
-    async def handle_code_update(self, file_id, content):
-        try:
-            logger.info(f"Handling code update for file {file_id}")
-            
-            # Cache the content first
-            self.file_contents[file_id] = content
+    async def file_opened(self, event):
+        """Handle file opened event"""
+        if event['user_id'] != self.user_id:  # Don't send back to sender
+            logger.info(f"User {event['user_id']} opened file {event['file_id']}")
+            await self.send(json.dumps({
+                'type': 'file_opened',
+                'user_id': event['user_id'],
+                'file_id': event['file_id']
+            }))
 
-            # Find all clients that should receive this update
-            recipients = set()
-            
-            # Add all clients viewing this file
-            if file_id in self.file_clients:
-                logger.info(f"Found {len(self.file_clients[file_id])} clients viewing file {file_id}")
-                recipients.update(self.file_clients[file_id])
-            
-            # Add collaboration room clients
-            for token, clients in self.collaboration_rooms.items():
-                if self in clients:
-                    logger.info(f"Adding {len(clients)} clients from collaboration room")
-                    recipients.update(clients)
-            
-            # Remove self from recipients to avoid echo
-            recipients.discard(self)
-            
-            logger.info(f"Broadcasting update to {len(recipients)} recipients")
-            
-            # Send updates to all recipients
-            update_message = {
-                'type': 'update',
-                'fileId': file_id,
-                'content': content,
-            }
-            
-            for client in recipients:
-                try:
-                    await client.send(text_data=json.dumps(update_message))
-                    logger.info(f"Update sent successfully to a client")
-                except Exception as e:
-                    logger.error(f"Failed to send update to client: {str(e)}")
 
-            # Only persist to file system if explicitly requested via save
-            # await self.update_file_content(file_id, content)
 
-        except Exception as e:
-            logger.error(f"Error updating file: {str(e)}")
-            await self.send_error(f"Failed to update file: {str(e)}")
-            raise
-
-    async def handle_operation(self, file_id, operation_data, revision):
-        try:
-            if file_id not in self.file_contents:
-                raise ValueError("File not loaded")
-
-            operation = TextOperation.from_json(operation_data)
-            
-            # If there are pending operations, compose them
-            if self.file_operations[file_id]:
-                last_op = self.file_operations[file_id][-1]
-                operation = compose_operations(last_op, operation)
-
-            # Apply the operation
-            self.file_contents[file_id] = operation.apply(self.file_contents[file_id])
-            self.file_operations[file_id].append(operation)
-
-            # Broadcast to other clients
-            recipients = set()
-            if file_id in self.file_clients:
-                recipients.update(self.file_clients[file_id])
-            
-            for token, clients in self.collaboration_rooms.items():
-                if self in clients:
-                    recipients.update(clients)
-
-            for client in recipients:
-                if client != self:
-                    await client.send(text_data=json.dumps({
-                        'type': 'operation',
-                        'fileId': file_id,
-                        'operation': operation.to_json(),
-                        'revision': revision
-                    }))
-
-        except Exception as e:
-            logger.error(f"Error handling operation: {str(e)}")
-            await self.send_error(str(e))
-
-    @database_sync_to_async
-    def persist_file_content(self, file_id):
-        """Handle file saving in sync context"""
-        from filesys.models import File
-        file_instance = get_object_or_404(File, id=file_id)
-        file_path = os.path.join(file_instance.repository.location, file_instance.path)
-        
-        with open(file_path, 'w', encoding='utf-8') as f:
-            f.write(self.file_contents[file_id])
-        
-        return file_instance
-
-    async def handle_save_file(self, file_id):
-        try:
-            if file_id not in self.file_contents:
-                raise ValueError("File not loaded")
-
-            # Persist content
-            await self.persist_file_content(file_id)
-
-            # Clear the operations history after saving
-            self.file_operations[file_id] = []
-
-            # Notify all clients about successful save
-            await self.broadcast_to_file_clients(file_id, {
-                'type': 'saved',
-                'fileId': file_id
-            })
-
-        except Exception as e:
-            logger.error(f"Error saving file: {str(e)}")
-            await self.send_error(str(e))
-
-    async def broadcast_to_file_clients(self, file_id, message):
-        recipients = set()
-        if file_id in self.file_clients:
-            recipients.update(self.file_clients[file_id])
-        
-        for token, clients in self.collaboration_rooms.items():
-            if self in clients:
-                recipients.update(clients)
-
-        for client in recipients:
-            await client.send(text_data=json.dumps(message))
-
-    async def broadcast_room_message(self, token, message):
-        """Helper method to broadcast messages to all clients in a room"""
-        if token in self.collaboration_rooms:
-            for client in self.collaboration_rooms[token]:
-                try:
-                    await client.send(text_data=json.dumps(message))
-                except Exception as e:
-                    logger.error(f"Failed to send message to client: {str(e)}")
-
-    async def send_error(self, message):
-        await self.send(text_data=json.dumps({
-            'type': 'error',
-            'message': message
-        }))

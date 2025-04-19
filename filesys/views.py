@@ -14,6 +14,7 @@ from rest_framework.exceptions import PermissionDenied
 from django.conf import settings
 from django.db import transaction
 from django.shortcuts import get_object_or_404
+from django.http import Http404
 from .models import Repository, File
 from .serializers import RepositorySerializer, FileSerializer
 from .permissions import IsOwnerOrCollaborator
@@ -27,7 +28,7 @@ class RepositoryViewSet(viewsets.ModelViewSet):
     serializer_class = RepositorySerializer
     permission_classes = [permissions.IsAuthenticated, IsOwnerOrCollaborator]
     lookup_field = 'slug'
-    lookup_value_regex = '[\w-]+/[\w-]+'  # Allows slashes in the slug
+    lookup_value_regex = r'[\w-]+/[\w-]+'  # Allows slashes in the slug - using raw string to fix escape sequence
 
     def get_queryset(self):
         # Show repositories where user is owner or collaborator
@@ -313,12 +314,17 @@ class FileViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         try:
-            repository = get_object_or_404(
-                Repository,
-                slug=self.kwargs['repository_slug']
-            )
-            if not repository.user_has_access(self.request.user):
+            repo_slug = self.kwargs['repository_slug'].replace('%2F', '/')
+            
+            # Get repository with access check
+            repository = Repository.objects.filter(
+                Q(user=self.request.user) | Q(collaborators=self.request.user),
+                slug=repo_slug
+            ).first()  # Get the first matching repository that user has access to
+            
+            if not repository:
                 return File.objects.none()
+                
             return File.objects.filter(repository=repository)
         except Exception as e:
             logger.error(f"Error in get_queryset: {str(e)}")
@@ -373,14 +379,25 @@ class FileViewSet(viewsets.ModelViewSet):
 
     def get_serializer_context(self):
         context = super().get_serializer_context()
-        repository = get_object_or_404(
-            Repository.objects.filter(
-                Q(user=self.request.user) | 
-                Q(collaborators=self.request.user)
-            ),
-            slug=self.kwargs['repository_slug']
-        )
-        context['repository'] = repository
+        try:
+            repo_slug = self.kwargs['repository_slug'].replace('%2F', '/')
+            
+            # Get repository with access check
+            repository = Repository.objects.filter(
+                Q(user=self.request.user) | Q(collaborators=self.request.user),
+                slug=repo_slug
+            ).first()  # Get the first matching repository that user has access to
+            
+            if not repository:
+                raise Http404("Repository not found or access denied")
+            
+            context['repository'] = repository
+        except Repository.DoesNotExist:
+            raise Http404("Repository not found")
+        except Exception as e:
+            logger.error(f"Error getting repository: {str(e)}")
+            raise
+
         return context
 
     @transaction.atomic
