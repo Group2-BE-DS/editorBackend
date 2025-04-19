@@ -16,7 +16,7 @@ class EditorConsumer(AsyncWebsocketConsumer):
         
         # Initialize consumer state
         self.user_id = ''.join(random.choices(string.digits, k=20))
-        self.username = "Anonymous"
+        self.username = None  # Will be set from auth token
         self.joined_at = datetime.now().isoformat()
         self.status = 'active'
         self.is_collaborative = False
@@ -25,8 +25,8 @@ class EditorConsumer(AsyncWebsocketConsumer):
         self.room_name = None
         self.room_group_name = None
         
-        logger.info(f"Connection accepted for user: {self.username} ({self.user_id})")
-        logger.info("Waiting for initial message with token...")
+        logger.info(f"Connection accepted for user ID: {self.user_id}")
+        logger.info("Waiting for initial message with tokens...")
 
     async def disconnect(self, close_code):
         logger.info(f"WebSocket disconnected for user {self.user_id} with code: {close_code}")
@@ -65,6 +65,8 @@ class EditorConsumer(AsyncWebsocketConsumer):
                 await self.handle_open_file(data)
             elif message_type == 'codeUpdate':
                 await self.handle_code_update(data)
+            elif message_type == 'status_update':
+                await self.update_user_status(data.get('status', 'active'))
             else:
                 logger.warning(f"Unknown message type from user {self.user_id}: {message_type}")
                 
@@ -76,17 +78,36 @@ class EditorConsumer(AsyncWebsocketConsumer):
     async def handle_init(self, data):
         """Handle initial connection setup with token verification"""
         token = data.get('token', '').strip()
-        logger.info(f"Processing init message from user {self.user_id} with token: {token[:10] if token else 'None'}...")
+        auth_token = data.get('authToken', '').strip()
         
+        logger.info(f"Processing init message from user {self.user_id}")
+        logger.info(f"Auth token present: {bool(auth_token)}")
+        logger.info(f"Collab token present: {bool(token)}")
+        
+        # Try to get username from auth token first
+        if auth_token:
+            from rest_framework.authtoken.models import Token
+            try:
+                token_obj = await asyncio.get_event_loop().run_in_executor(None, 
+                    lambda: Token.objects.select_related('user').get(key=auth_token))
+                self.username = token_obj.user.username
+                logger.info(f"Found username from auth token: {self.username}")
+            except Token.DoesNotExist:
+                logger.warning("Auth token invalid or expired")
+                self.username = "Anonymous"
+        else:
+            self.username = "Anonymous"
+            logger.warning("No auth token provided")
+
         if not token:
-            logger.warning(f"No token provided by user {self.user_id}")
+            logger.warning(f"No collaboration token provided by user {self.user_id}")
             await self.send(json.dumps({
                 'type': 'solo_mode',
                 'message': 'No token provided, working in solo mode'
             }))
             return
 
-        # Verify token and get repository info
+        # Verify collaboration token and get repository info
         if TokenStore.verify_token(token):
             logger.info(f"Token verified successfully for user {self.user_id}")
             self.token = token
@@ -102,7 +123,7 @@ class EditorConsumer(AsyncWebsocketConsumer):
                 
             logger.info(f"Retrieved repository slug for user {self.user_id}: {self.repository_slug}")
             
-            # Add user connection to token store
+            # Add user connection to token store with actual username
             if TokenStore.add_connection(token, self.user_id, self.username):
                 self.is_collaborative = True
                 self.room_name = self.repository_slug.replace('/', '_')
@@ -142,7 +163,7 @@ class EditorConsumer(AsyncWebsocketConsumer):
                     }
                 )
                 
-                logger.info(f"Successfully completed collaboration setup for user {self.user_id}")
+                logger.info(f"Successfully completed collaboration setup for user {self.username} ({self.user_id})")
             else:
                 logger.error(f"Failed to add user connection for {self.user_id}")
                 await self.send(json.dumps({
@@ -204,12 +225,12 @@ class EditorConsumer(AsyncWebsocketConsumer):
         users = []
         connections = TokenStore.get_connections(self.token)
         if connections:
-            for user_id in connections:
+            for user_id, username in connections.items():
                 users.append({
-                    'username': 'Anonymous',  # For now, all users are anonymous
+                    'username': username,  # Use actual username from token store
                     'joined_at': self.joined_at,
                     'id': user_id,
-                    'status': 'active',
+                    'status': 'active', 
                     'last_activity': datetime.now().isoformat()
                 })
         return users
@@ -263,6 +284,45 @@ class EditorConsumer(AsyncWebsocketConsumer):
                 'type': 'file_opened',
                 'user_id': event['user_id'],
                 'file_id': event['file_id']
+            }))
+
+    async def update_user_status(self, status):
+        """Update user status and notify others"""
+        if not self.is_collaborative:
+            return
+
+        self.status = status
+        if self.room_group_name and self.token:
+            # Update status in token store
+            connected_users = TokenStore.get_connections(self.token)
+            if connected_users:
+                # Update the user's status
+                for user in connected_users:
+                    if user['id'] == self.user_id:
+                        user['status'] = status
+                        user['last_activity'] = datetime.now().isoformat()
+                        break
+
+                # Notify others about status change
+                await self.channel_layer.group_send(
+                    self.room_group_name,
+                    {
+                        'type': 'user_status_changed',
+                        'user': {
+                            'id': self.user_id,
+                            'username': self.username,
+                            'status': status,
+                            'last_activity': datetime.now().isoformat()
+                        }
+                    }
+                )
+
+    async def user_status_changed(self, event):
+        """Handle user status change event"""
+        if event['user']['id'] != self.user_id:  # Don't send back to sender
+            await self.send(json.dumps({
+                'type': 'user_status_changed',
+                'user': event['user']
             }))
 
 
